@@ -12,14 +12,17 @@
 #   ./install-deps.sh
 #
 # Поддерживайте список пакетов в актуальном состоянии при новых import из PyPI.
-# Код: Xsens_mod/main.py, DataPacketParser.py, SerialHandler.py, csv_plot_browser.py
+# Код: main.py, DataPacketParser.py, SerialHandler.py, csv_plot_browser.py,
+#       train_detector.py, realtime_detector.py
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
 python3 -m pip install -U pip
 python3 -m pip install \
-  "numpy>=1.26" \
+  "numpy>=1.26,<2" \
   "matplotlib>=3.8" \
   "pandas>=2.0" \
-  "pyserial>=3.5"
+  "pyserial>=3.5" \
+  "scikit-learn>=1.3" \
+  "scipy>=1.10"
