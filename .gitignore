@@ -1,2 +1,10 @@
 /__pycache__/
+<<<<<<< HEAD
 /data_logging/
+=======
+/data_logging/
+
+# Вырезки из csv_plot_browser (локально); не коммитить и не терять при git clean -fd
+Normal_mod/
+Deformed_mod/
+>>>>>>> 89d3c65 (dev: независимая ветка (полный код и данные))
