@@ -8,7 +8,6 @@ import numpy as np
 from collections import deque
 import matplotlib.pyplot as plt
 import os
-import subprocess
 
 # Класс для расчёта вибрации (с вычитанием гравитации)
 class VibrationAnalyzer:
@@ -100,33 +99,6 @@ class VibrationAnalyzer:
         return filename
 
 
-def send_files_to_ubuntu(local_dir, simulation_name):
-    """Отправляет папку с данными на Ubuntu"""
-    remote_user = "aleksey"
-    remote_host = "172.20.10.3"  # или IP адрес вашего Ubuntu
-    remote_path = "/home/aleksey/DATA/"
-    
-    # Полный путь назначения
-    remote_full_path = f"{remote_user}@{remote_host}:{remote_path}{simulation_name}"
-    
-    print(f"\n📤 Отправка данных на {remote_user}@{remote_host}:{remote_path}{simulation_name}")
-    
-    try:
-        # Используем scp для копирования всей папки
-        cmd = f"scp -r {local_dir} {remote_full_path}"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            print(f"✅ Данные успешно отправлены в {remote_path}{simulation_name}")
-            return True
-        else:
-            print(f"❌ Ошибка отправки: {result.stderr}")
-            return False
-    except Exception as e:
-        print(f"❌ Исключение при отправке: {e}")
-        return False
-
-
 def on_live_data_available(packet, vib_analyzer=None):
     xbus_data = XsDataPacket() 
     DataPacketParser.parse_data_packet(packet, xbus_data)
@@ -162,10 +134,13 @@ def main():
     simulation_dir = None
     
     try:
-        # Создаём папку для текущей симуляции
+        # Создаём папку для текущей симуляции (локально в проекте)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         simulation_name = f"simulation_{timestamp}"
-        simulation_dir = os.path.join('/tmp', simulation_name)  # Временная папка на RPi
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        local_sessions_root = os.path.join(project_root, "flight_logs")
+        os.makedirs(local_sessions_root, exist_ok=True)
+        simulation_dir = os.path.join(local_sessions_root, simulation_name)
         os.makedirs(simulation_dir, exist_ok=True)
         print(f"📁 Создана папка для симуляции: {simulation_dir}")
         
@@ -229,13 +204,7 @@ def main():
             print(f"   Минимальная: {min(total_vibs):.4f} m/s²")
             print(f"   Всего семплов: {len(vib_analyzer.vibration_log)}")
             
-            # Отправляем файлы на Ubuntu
-            send_files_to_ubuntu(simulation_dir, simulation_name)
-            
-            # Удаляем временную папку на RPi (опционально)
-            import shutil
-            shutil.rmtree(simulation_dir)
-            print(f"🗑️ Временная папка на RPi удалена")
+            print(f"💾 Данные сохранены локально: {simulation_dir}")
         else:
             print("Нет данных для сохранения")
         
