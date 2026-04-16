@@ -41,6 +41,30 @@ for ubuntu:
 python3 main.py
 ```
 
+### Build separate training sets
+
+To save clipped CSVs without overwriting existing `Normal_mod` / `Deformed_mod`,
+run:
+
+```bash
+python3 csv_plot_browser.py Normal --dataset-name set_01
+python3 csv_plot_browser.py Deformed --dataset-name set_01
+```
+
+This creates:
+
+```text
+datasets/set_01/Normal_mod/
+datasets/set_01/Deformed_mod/
+```
+
+Then train on the selected dataset:
+
+```bash
+python3 train_detector.py --base datasets/set_01 --output model_set_01.pkl
+python3 train_rf_detector.py --base datasets/set_01 --output model_set_01_rf.pkl
+```
+
 
 
 This code has been checked with MTi-680 in Windows 11, and MTi-300 in ubuntu 18.04LTS(nVidia Jetson Nano),  not all other MTi models were tested, by they share the same Xbus communication protocol.

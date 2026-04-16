@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 Просмотр CSV в Normal или Deformed: одно полотно, переключение файлов.
-Выделите на графике интервал по оси X (мышь) и сохраните обрезанный CSV в
-Normal_mod или Deformed_mod — та же структура подпапок, что у исходника.
+Выделите на графике интервал по оси X (мышь) и сохраните обрезанный CSV.
+
+По умолчанию результат сохраняется в Normal_mod или Deformed_mod рядом с
+исходными папками. При указании --dataset-name создаётся отдельный набор:
+datasets/<name>/Normal_mod или datasets/<name>/Deformed_mod.
 
 Клик по линии — имя ряда; клик по полю графика — путь к CSV.
 """
@@ -79,6 +82,24 @@ def parse_args() -> argparse.Namespace:
         default=base,
         help=f"Каталог, внутри которого лежит Normal/Deformed (по умолчанию: {base})",
     )
+    p.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help=(
+            "Имя отдельного набора для сохранения _mod, например set_01. "
+            "Тогда файлы пойдут в datasets/<name>/Normal_mod или Deformed_mod"
+        ),
+    )
+    p.add_argument(
+        "--datasets-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Каталог с наборами данных. По умолчанию: <base>/datasets. "
+            "Используется вместе с --dataset-name"
+        ),
+    )
     return p.parse_args()
 
 
@@ -98,7 +119,16 @@ def resolve_data_root(base: Path, folder_name: str) -> Path:
     return root
 
 
-def mod_root_for(base: Path, data_root: Path) -> Path:
+def mod_root_for(base: Path, data_root: Path, dataset_name: str | None, datasets_dir: Path | None) -> Path:
+    if dataset_name:
+        root = datasets_dir if datasets_dir is not None else (base / "datasets")
+        dataset_base = root / dataset_name
+        if data_root.name == "Normal":
+            return dataset_base / "Normal_mod"
+        if data_root.name == "Deformed":
+            return dataset_base / "Deformed_mod"
+        raise ValueError(f"Неизвестная корневая папка данных: {data_root.name}")
+
     name = data_root.name
     if name == "Normal":
         return base / "Normal_mod"
@@ -145,9 +175,19 @@ def main() -> None:
     region = [None, None]  # xmin, xmax по оси X после выделения SpanSelector
 
     base_path = args.base.resolve()
-    mod_root = mod_root_for(base_path, data_root)
-    (base_path / "Normal_mod").mkdir(exist_ok=True)
-    (base_path / "Deformed_mod").mkdir(exist_ok=True)
+    datasets_dir = args.datasets_dir.resolve() if args.datasets_dir is not None else None
+    mod_root = mod_root_for(base_path, data_root, args.dataset_name, datasets_dir)
+    mod_root.mkdir(parents=True, exist_ok=True)
+
+    if args.dataset_name:
+        dataset_base = mod_root.parent
+        (dataset_base / "Normal_mod").mkdir(parents=True, exist_ok=True)
+        (dataset_base / "Deformed_mod").mkdir(parents=True, exist_ok=True)
+        output_hint = f"datasets/{args.dataset_name}"
+    else:
+        (base_path / "Normal_mod").mkdir(exist_ok=True)
+        (base_path / "Deformed_mod").mkdir(exist_ok=True)
+        output_hint = mod_root.name
 
     fig = plt.figure(figsize=(12, 7))
     # Одна область графика; кнопки и подписи не пересоздаём при смене файла
@@ -174,7 +214,7 @@ def main() -> None:
 
     btn_prev = Button(ax_prev, "Назад")
     btn_next = Button(ax_next, "Вперёд")
-    btn_save = Button(ax_save, f"Сохранить в {mod_root.name}")
+    btn_save = Button(ax_save, f"Сохранить в {output_hint}")
 
     span_keepalive: list[SpanSelector] = []
 
@@ -204,7 +244,7 @@ def main() -> None:
             region[1] = float(max(xmin, xmax))
             status_txt.set_text(
                 f"Интервал X: [{region[0]:.6g} … {region[1]:.6g}] — "
-                f"нажмите «Сохранить в _mod»"
+                f"нажмите «Сохранить»"
             )
             fig.canvas.draw_idle()
 
@@ -222,7 +262,7 @@ def main() -> None:
 
         title_txt.set_text(
             f"{data_root.name} — файл {idx[0] + 1} из {len(plottable)}: {path.name}\n"
-            "Мышью выделите зону по оси X → «Сохранить в _mod». "
+            f"Мышью выделите зону по оси X → «Сохранить». Вывод: {output_hint}. "
             "Клик по линии — ряд; по полю — путь к файлу"
         )
         fig.canvas.draw_idle()
