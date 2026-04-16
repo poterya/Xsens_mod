@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import pickle
 import sys
 import time
@@ -26,6 +27,10 @@ WINDOW_SIZE = 50
 STEP = 10
 CONFIDENCE_QUEUE_SIZE = 5
 SAMPLE_RATE_HZ = 100
+DEFAULT_DEFORMED_THRESHOLD = 0.60
+DEFAULT_SESSION_THRESHOLD = 0.20
+DEFAULT_EMA_ALPHA = 0.25
+DEFAULT_PEAK_THRESHOLD = 0.58
 
 
 def load_model(model_path: Path) -> dict:
@@ -103,10 +108,24 @@ def extract_features(total: np.ndarray, rms_x: np.ndarray,
 
 
 class RealtimeRFDetector:
-    def __init__(self, model_bundle: dict, window_size: int = WINDOW_SIZE):
+    def __init__(
+        self,
+        model_bundle: dict,
+        window_size: int = WINDOW_SIZE,
+        deformed_threshold: float = DEFAULT_DEFORMED_THRESHOLD,
+        session_threshold: float = DEFAULT_SESSION_THRESHOLD,
+        peak_threshold: float = DEFAULT_PEAK_THRESHOLD,
+        ema_alpha: float = DEFAULT_EMA_ALPHA,
+        invert_labels: bool = False,
+    ):
         self.clf = model_bundle["classifier"]
         self.feature_names = model_bundle["feature_names"]
         self.window_size = window_size
+        self.deformed_threshold = deformed_threshold
+        self.session_threshold = session_threshold
+        self.peak_threshold = peak_threshold
+        self.ema_alpha = ema_alpha
+        self.invert_labels = invert_labels
 
         self.acc_x: deque = deque(maxlen=window_size)
         self.acc_y: deque = deque(maxlen=window_size)
@@ -118,9 +137,16 @@ class RealtimeRFDetector:
         self.vib_z: deque = deque(maxlen=window_size)
 
         self.sample_count = 0
-        self.prediction_log: list[tuple[float, int, float]] = []
+        self.prediction_log: list[tuple[float, int, float, float, float]] = []
         self.confidence_queue: deque = deque(maxlen=CONFIDENCE_QUEUE_SIZE)
         self.start_time = time.time()
+        self.p_deformed_ema: float | None = None
+
+    @property
+    def deformed_class_index(self) -> int:
+        classes = getattr(self.clf, "classes_", np.array([0, 1]))
+        matches = np.where(classes == 1)[0]
+        return int(matches[0]) if len(matches) else 1
 
     def add_accel(self, ax: float, ay: float, az: float) -> None:
         self.acc_x.append(ax)
@@ -163,13 +189,21 @@ class RealtimeRFDetector:
         if np.any(nan_mask):
             x_vec[nan_mask] = 0.0
 
-        pred = self.clf.predict(x_vec)[0]
         proba = self.clf.predict_proba(x_vec)[0]
-        confidence = float(proba[pred])
+        p_deformed_raw = float(proba[self.deformed_class_index])
+        p_deformed = 1.0 - p_deformed_raw if self.invert_labels else p_deformed_raw
+
+        if self.p_deformed_ema is None:
+            self.p_deformed_ema = p_deformed
+        else:
+            self.p_deformed_ema = self.ema_alpha * p_deformed + (1.0 - self.ema_alpha) * self.p_deformed_ema
+
+        pred = 1 if self.p_deformed_ema >= self.deformed_threshold else 0
+        confidence = self.p_deformed_ema if pred == 1 else (1.0 - self.p_deformed_ema)
 
         self.confidence_queue.append(pred)
         elapsed = time.time() - self.start_time
-        self.prediction_log.append((elapsed, pred, confidence))
+        self.prediction_log.append((elapsed, pred, confidence, p_deformed, self.p_deformed_ema))
         return int(pred), confidence
 
     @property
@@ -180,7 +214,8 @@ class RealtimeRFDetector:
 
 
 def display_status(pred: int, confidence: float, smoothed: int | None,
-                   rms_total: float | None) -> None:
+                   rms_total: float | None, p_deformed: float | None = None,
+                   p_deformed_ema: float | None = None) -> None:
     label = "DEFORMED" if pred == 1 else "NORMAL"
     color = "\033[91m" if pred == 1 else "\033[92m"
     reset = "\033[0m"
@@ -190,10 +225,46 @@ def display_status(pred: int, confidence: float, smoothed: int | None,
         s_color = "\033[91m" if smoothed == 1 else "\033[92m"
         smooth_str = f"  сглаж: {s_color}{s_label}{reset}"
     vib_str = f"  vib={rms_total:.4f}" if rms_total else ""
-    print(f"{color}[{label}]{reset} conf={confidence:.2f}{smooth_str}{vib_str}")
+    p_def_str = f"  p_def={p_deformed:.2f}" if p_deformed is not None else ""
+    p_ema_str = f"  p_ema={p_deformed_ema:.2f}" if p_deformed_ema is not None else ""
+    print(f"{color}[{label}]{reset} conf={confidence:.2f}{p_def_str}{p_ema_str}{smooth_str}{vib_str}")
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Онлайн-детекция поломки винта (Random Forest)")
+    parser.add_argument("--port", type=str, default="/dev/ttyUSB0")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--deformed-threshold",
+        type=float,
+        default=DEFAULT_DEFORMED_THRESHOLD,
+        help="Порог p_ema(DEFORMED) для вывода DEFORMED (по умолчанию 0.60)",
+    )
+    parser.add_argument(
+        "--session-threshold",
+        type=float,
+        default=DEFAULT_SESSION_THRESHOLD,
+        help="Порог доли DEFORMED окон для итогового вердикта (по умолчанию 0.20)",
+    )
+    parser.add_argument(
+        "--peak-threshold",
+        type=float,
+        default=DEFAULT_PEAK_THRESHOLD,
+        help="Порог q90 по p_ema: выше => BROKEN даже при пограничной доле (по умолчанию 0.58)",
+    )
+    parser.add_argument(
+        "--ema-alpha",
+        type=float,
+        default=DEFAULT_EMA_ALPHA,
+        help="Скорость сглаживания p_deformed (0..1, по умолчанию 0.25)",
+    )
+    parser.add_argument(
+        "--invert-labels",
+        action="store_true",
+        help="Инвертировать p_deformed, если модель предсказывает классы наоборот",
+    )
+    args = parser.parse_args()
+
     base = Path(__file__).resolve().parent
     model_path = base / "propeller_fault_rf.pkl"
     if not model_path.exists():
@@ -202,13 +273,27 @@ def main() -> None:
         sys.exit(1)
 
     bundle = load_model(model_path)
-    detector = RealtimeRFDetector(bundle)
+    detector = RealtimeRFDetector(
+        bundle,
+        deformed_threshold=args.deformed_threshold,
+        session_threshold=args.session_threshold,
+        peak_threshold=args.peak_threshold,
+        ema_alpha=args.ema_alpha,
+        invert_labels=args.invert_labels,
+    )
     model_type = bundle.get("model_type", "Unknown")
     print(f"Модель: {model_type} ({model_path.name})")
     print(f"Признаков: {len(bundle['feature_names'])}, окно: {WINDOW_SIZE}")
+    print(f"Порог DEFORMED: p_ema >= {args.deformed_threshold:.2f}")
+    print(
+        f"Пороги сессии: ratio >= {args.session_threshold:.2f} или q90(p_ema) >= {args.peak_threshold:.2f}; "
+        f"ema_alpha={args.ema_alpha:.2f}"
+    )
+    if args.invert_labels:
+        print("Режим: INVERT_LABELS включён (инверсия p_deformed)")
     print("=" * 60)
 
-    serial = SerialHandler("/dev/ttyUSB0", 115200)
+    serial = SerialHandler(args.port, args.baud)
 
     serial.send_with_checksum(bytes.fromhex("FA FF 30 00"))
     print("Config mode...")
@@ -249,7 +334,9 @@ def main() -> None:
             return
 
         pred, conf = result
-        display_status(pred, conf, detector.smoothed_label, last_total[0])
+        p_def = detector.prediction_log[-1][3] if detector.prediction_log else None
+        p_ema = detector.prediction_log[-1][4] if detector.prediction_log else None
+        display_status(pred, conf, detector.smoothed_label, last_total[0], p_deformed=p_def, p_deformed_ema=p_ema)
 
     packet = XbusPacket(on_data_available=on_packet)
 
@@ -267,17 +354,23 @@ def main() -> None:
             n_deformed = preds.count(1)
             print(f"Предсказаний: {len(preds)} (Normal={n_normal}, Deformed={n_deformed})")
             ratio = n_deformed / max(len(preds), 1)
-            verdict = "DEFORMED" if ratio > 0.5 else "NORMAL"
-            print(f"Итог: {verdict} (deformed ratio={ratio:.2f})")
+            p_ema_values = [row[4] for row in detector.prediction_log]
+            q90 = float(np.quantile(p_ema_values, 0.9)) if p_ema_values else 0.0
+            broken = ratio >= detector.session_threshold or q90 >= detector.peak_threshold
+            verdict = "BROKEN" if broken else "NORMAL"
+            print(
+                f"Итог для оператора: {verdict} "
+                f"(ratio={ratio:.2f}, q90(p_ema)={q90:.2f})"
+            )
 
             log_dir = base / "detection_logs"
             log_dir.mkdir(exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_path = log_dir / f"rf_detection_{ts}.csv"
             with open(log_path, "w") as f:
-                f.write("elapsed_s,prediction,confidence\n")
-                for t, p, c in detector.prediction_log:
-                    f.write(f"{t:.3f},{p},{c:.4f}\n")
+                f.write("elapsed_s,prediction,confidence,p_deformed,p_deformed_ema\n")
+                for t, p, c, p_def, p_ema in detector.prediction_log:
+                    f.write(f"{t:.3f},{p},{c:.4f},{p_def:.4f},{p_ema:.4f}\n")
             print(f"Лог: {log_path}")
 
 
