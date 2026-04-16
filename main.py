@@ -11,7 +11,7 @@ import os
 
 # Класс для расчёта вибрации (с вычитанием гравитации)
 class VibrationAnalyzer:
-    def __init__(self, window_size=50):
+    def __init__(self, window_size=20):
         self.window_size = window_size
         self.acc_x = deque(maxlen=window_size)
         self.acc_y = deque(maxlen=window_size)
@@ -164,7 +164,8 @@ def main():
         print("Listening for packets... (Ctrl+C для остановки)\n")
         print("=" * 80)
 
-        vib_analyzer = VibrationAnalyzer(window_size=50)
+        vib_analyzer = VibrationAnalyzer(window_size=20)
+        print(f"Окно расчёта вибрации: {vib_analyzer.window_size} сэмплов")
 
         packet = XbusPacket(on_data_available=lambda p: on_live_data_available(p, vib_analyzer))
 
