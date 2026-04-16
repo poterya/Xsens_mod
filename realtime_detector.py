@@ -28,9 +28,11 @@ WINDOW_SIZE = 50
 STEP = 10
 CONFIDENCE_QUEUE_SIZE = 5
 DEFAULT_DEFORMED_THRESHOLD = 0.60
-DEFAULT_SESSION_THRESHOLD = 0.20
+DEFAULT_SESSION_THRESHOLD = 0.22
 DEFAULT_EMA_ALPHA = 0.25
-DEFAULT_PEAK_THRESHOLD = 0.58
+DEFAULT_PEAK_THRESHOLD = 0.65
+DEFAULT_STREAK_THRESHOLD = 20
+DEFAULT_WARMUP_SECONDS = 10.0
 
 
 def load_model(model_path: Path) -> dict:
@@ -76,6 +78,7 @@ class RealtimeFaultDetector:
         deformed_threshold: float = DEFAULT_DEFORMED_THRESHOLD,
         session_threshold: float = DEFAULT_SESSION_THRESHOLD,
         peak_threshold: float = DEFAULT_PEAK_THRESHOLD,
+        streak_threshold: int = DEFAULT_STREAK_THRESHOLD,
         ema_alpha: float = DEFAULT_EMA_ALPHA,
         invert_labels: bool = False,
     ):
@@ -85,6 +88,7 @@ class RealtimeFaultDetector:
         self.deformed_threshold = deformed_threshold
         self.session_threshold = session_threshold
         self.peak_threshold = peak_threshold
+        self.streak_threshold = streak_threshold
         self.ema_alpha = ema_alpha
         self.invert_labels = invert_labels
 
@@ -201,13 +205,19 @@ def main() -> None:
         "--session-threshold",
         type=float,
         default=DEFAULT_SESSION_THRESHOLD,
-        help="Порог доли DEFORMED окон для итогового вердикта (по умолчанию 0.20)",
+        help="Порог доли DEFORMED окон для итогового вердикта (по умолчанию 0.22)",
     )
     parser.add_argument(
         "--peak-threshold",
         type=float,
         default=DEFAULT_PEAK_THRESHOLD,
-        help="Порог q90 по p_ema: выше => BROKEN даже при пограничной доле (по умолчанию 0.58)",
+        help="Порог q90 по p_ema для устойчивой деформации (по умолчанию 0.65)",
+    )
+    parser.add_argument(
+        "--streak-threshold",
+        type=int,
+        default=DEFAULT_STREAK_THRESHOLD,
+        help="Минимальная длина серии DEFORMED для устойчивого BROKEN (по умолчанию 20)",
     )
     parser.add_argument(
         "--ema-alpha",
@@ -219,6 +229,12 @@ def main() -> None:
         "--invert-labels",
         action="store_true",
         help="Инвертировать p_deformed, если модель предсказывает классы наоборот",
+    )
+    parser.add_argument(
+        "--warmup-seconds",
+        type=float,
+        default=DEFAULT_WARMUP_SECONDS,
+        help="Сколько секунд после старта не выполнять детекцию (по умолчанию 10)",
     )
     args = parser.parse_args()
 
@@ -235,6 +251,7 @@ def main() -> None:
         deformed_threshold=args.deformed_threshold,
         session_threshold=args.session_threshold,
         peak_threshold=args.peak_threshold,
+        streak_threshold=args.streak_threshold,
         ema_alpha=args.ema_alpha,
         invert_labels=args.invert_labels,
     )
@@ -242,9 +259,10 @@ def main() -> None:
     print(f"Окно: {WINDOW_SIZE}, шаг предсказания: {STEP}, сглаживание: {CONFIDENCE_QUEUE_SIZE}")
     print(f"Порог DEFORMED: p_ema >= {args.deformed_threshold:.2f}")
     print(
-        f"Пороги сессии: ratio >= {args.session_threshold:.2f} или q90(p_ema) >= {args.peak_threshold:.2f}; "
-        f"ema_alpha={args.ema_alpha:.2f}"
+        f"Пороги сессии: ratio >= {args.session_threshold:.2f}, q90(p_ema) >= {args.peak_threshold:.2f}, "
+        f"streak >= {args.streak_threshold}; ema_alpha={args.ema_alpha:.2f}"
     )
+    print(f"Прогрев: первые {args.warmup_seconds:.1f} сек без детекции")
     if args.invert_labels:
         print("Режим: INVERT_LABELS включён (инверсия p_deformed)")
     print("=" * 60)
@@ -272,6 +290,8 @@ def main() -> None:
 
     step_counter = [0]
     last_total = [None]
+    warmup_start = time.time()
+    warmup_done = [False]
 
     def on_packet(raw_packet):
         xbus_data = XsDataPacket()
@@ -284,6 +304,13 @@ def main() -> None:
 
         if len(detector.vib_total) > 0:
             last_total[0] = float(detector.vib_total[-1])
+
+        elapsed_warmup = time.time() - warmup_start
+        if elapsed_warmup < args.warmup_seconds:
+            return
+        if not warmup_done[0]:
+            warmup_done[0] = True
+            print(f"\nПрогрев завершён ({args.warmup_seconds:.1f} сек). Детекция запущена.\n")
 
         step_counter[0] += 1
         if step_counter[0] % STEP != 0:
@@ -316,11 +343,24 @@ def main() -> None:
             ratio = n_deformed / max(len(preds), 1)
             p_ema_values = [row[4] for row in detector.prediction_log]
             q90 = float(np.quantile(p_ema_values, 0.9)) if p_ema_values else 0.0
-            broken = ratio >= detector.session_threshold or q90 >= detector.peak_threshold
+            max_streak = 0
+            cur = 0
+            for p in preds:
+                if p == 1:
+                    cur += 1
+                    if cur > max_streak:
+                        max_streak = cur
+                else:
+                    cur = 0
+
+            broken = (
+                (ratio >= detector.session_threshold and max_streak >= detector.streak_threshold // 2)
+                or (q90 >= detector.peak_threshold and max_streak >= detector.streak_threshold)
+            )
             verdict = "BROKEN" if broken else "NORMAL"
             print(
                 f"Итог для оператора: {verdict} "
-                f"(ratio={ratio:.2f}, q90(p_ema)={q90:.2f})"
+                f"(ratio={ratio:.2f}, q90(p_ema)={q90:.2f}, max_streak={max_streak})"
             )
 
             log_dir = base / "detection_logs"
