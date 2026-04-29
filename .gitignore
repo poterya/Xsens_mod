@@ -2,8 +2,9 @@
 /data_logging/
 
 # Вырезки из csv_plot_browser (локально); не коммитить и не терять при git clean -fd
-Normal_mod/
-Deformed_mod/
+# Только корень репозитория — наборы в datasets/<name>/Normal_mod остаются в git.
+/Normal_mod/
+/Deformed_mod/
 
 # Логи realtime_detector / realtime_rf_detector
 detection_logs/
