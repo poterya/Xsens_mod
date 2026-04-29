@@ -3,9 +3,13 @@
 Просмотр CSV в Normal или Deformed: одно полотно, переключение файлов.
 Выделите на графике интервал по оси X (мышь) и сохраните обрезанный CSV.
 
-По умолчанию результат сохраняется в Normal_mod или Deformed_mod рядом с
-исходными папками. При указании --dataset-name создаётся отдельный набор:
-datasets/<name>/Normal_mod или datasets/<name>/Deformed_mod.
+Для папки Deformed: справа одна группа — позиция винта и мотор X-коптера:
+  передний левый (B), передний правый (A), задний левый (A), задний правый (B).
+  Каталоги: Deformed_mod/<front_left|front_right|rear_left|rear_right>/...
+
+Для Normal: без подпапок позиции — Normal_mod/simulation_.../...
+
+При --dataset-name: datasets/<name>/Deformed_mod/<позиция>/...
 
 Клик по линии — имя ряда; клик по полю графика — путь к CSV.
 """
@@ -18,8 +22,18 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.widgets import Button, SpanSelector
+from matplotlib.widgets import Button, RadioButtons, SpanSelector
 from matplotlib.lines import Line2D
+
+# Позиция винта: подпись в UI (A/B по схеме моторов) → подпапка в Deformed_mod
+_DEFORMED_POSITIONS: tuple[tuple[str, str], ...] = (
+    ("передний левый (B)", "front_left"),
+    ("передний правый (A)", "front_right"),
+    ("задний левый (A)", "rear_left"),
+    ("задний правый (B)", "rear_right"),
+)
+_POSITION_LABELS = tuple(p[0] for p in _DEFORMED_POSITIONS)
+_LABEL_TO_SUBDIR = {p[0]: p[1] for p in _DEFORMED_POSITIONS}
 
 
 def _find_time_column(df: pd.DataFrame) -> str | None:
@@ -189,11 +203,25 @@ def main() -> None:
         (base_path / "Deformed_mod").mkdir(exist_ok=True)
         output_hint = mod_root.name
 
-    fig = plt.figure(figsize=(12, 7))
-    # Одна область графика; кнопки и подписи не пересоздаём при смене файла
-    # (иначе fig.clf() ломает matplotlib.widgets.Button).
-    ax_plot = fig.add_axes([0.08, 0.22, 0.89, 0.58])
+    fig = plt.figure(figsize=(13, 7))
+    # Одна область графика; кнопки и радио не пересоздаём при смене файла
+    ax_plot = fig.add_axes([0.08, 0.24, 0.62, 0.56])
     ax_plot.set_zorder(1)
+
+    is_deformed = data_root.name == "Deformed"
+    prop_subdir: list[str] = [_DEFORMED_POSITIONS[0][1]]
+    radio_pos = None
+    if is_deformed:
+        ax_radio_pos = fig.add_axes([0.72, 0.26, 0.26, 0.54])
+        ax_radio_pos.set_title("Позиция винта (мотор)", fontsize=9)
+        radio_pos = RadioButtons(ax_radio_pos, _POSITION_LABELS, active=0)
+
+        def _on_position(label: str) -> None:
+            prop_subdir[0] = _LABEL_TO_SUBDIR[label]
+            status_txt.set_text(f"Сохранение → …/Deformed_mod/{prop_subdir[0]}/")
+            fig.canvas.draw_idle()
+
+        radio_pos.on_clicked(_on_position)
 
     status_txt = fig.text(
         0.02,
@@ -260,9 +288,12 @@ def main() -> None:
             )
         )
 
+        pos_hint = ""
+        if is_deformed:
+            pos_hint = f" Папка: {prop_subdir[0]}."
         title_txt.set_text(
             f"{data_root.name} — файл {idx[0] + 1} из {len(plottable)}: {path.name}\n"
-            f"Мышью выделите зону по оси X → «Сохранить». Вывод: {output_hint}. "
+            f"Мышью выделите зону по оси X → «Сохранить». Вывод: {output_hint}.{pos_hint} "
             "Клик по линии — ряд; по полю — путь к файлу"
         )
         fig.canvas.draw_idle()
@@ -295,7 +326,10 @@ def main() -> None:
             return
         out_df = df_i[mask].copy()
         rel = path_i.relative_to(data_root)
-        dest = mod_root / rel
+        if data_root.name == "Deformed":
+            dest = mod_root / prop_subdir[0] / rel
+        else:
+            dest = mod_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             out_df.to_csv(dest, index=False)
