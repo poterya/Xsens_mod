@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Обучение дерева решений для детекции состояния винтов квадрокоптера
-по вибрационным данным Xsens.
+Обучение классификатора состояния винтов квадрокоптера по вибрационным данным.
 
 Классы (multiclass):
   normal       — все винты целые
@@ -10,28 +9,31 @@
   rear_left    — повреждён задний левый  (мотор A)
   rear_right   — повреждён задний правый (мотор B)
 
-Источник данных по умолчанию: datasets/set_02
-  Normal_mod/<sim>/vibration_log.csv
-  Deformed_mod/<position>/<sim>/vibration_log.csv
-
-Результат:
-  propeller_fault_model.pkl — обученная модель + список признаков + классы
+Особенности этой версии:
+- Расширенные признаки: спектр (FFT) + корреляции/асимметрии между осями
+  (см. feature_extraction.extract_features).
+- Честная валидация GroupKFold по сессиям (без утечки соседних окон).
+- По умолчанию RandomForest; ключ --model tree оставляет старое дерево.
 """
 from __future__ import annotations
 
 import argparse
 import pickle
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy import stats as sps
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import GroupKFold, StratifiedKFold, cross_val_score
 from sklearn.tree import DecisionTreeClassifier, export_text
 
+from feature_extraction import extract_features
+
 WINDOW_SIZE = 50
+STEP = 25
 
 CLASS_LABELS: tuple[str, ...] = (
     "normal",
@@ -49,59 +51,14 @@ POSITION_RU: dict[str, str] = {
     "rear_right": "задний правый",
 }
 
-
-def _stats_for_axis(values: np.ndarray, prefix: str) -> dict:
-    feats: dict = {}
-    feats[f"{prefix}_mean"] = float(np.mean(values))
-    feats[f"{prefix}_std"] = float(np.std(values))
-    feats[f"{prefix}_max"] = float(np.max(values))
-    feats[f"{prefix}_min"] = float(np.min(values))
-    feats[f"{prefix}_range"] = float(np.ptp(values))
-    feats[f"{prefix}_median"] = float(np.median(values))
-    q25, q75 = np.percentile(values, [25, 75])
-    feats[f"{prefix}_iqr"] = float(q75 - q25)
-    feats[f"{prefix}_p90"] = float(np.percentile(values, 90))
-    if values.size >= 8 and np.std(values) > 1e-12:
-        feats[f"{prefix}_skew"] = float(sps.skew(values, bias=False))
-        feats[f"{prefix}_kurtosis"] = float(sps.kurtosis(values, fisher=True, bias=False))
-    else:
-        feats[f"{prefix}_skew"] = 0.0
-        feats[f"{prefix}_kurtosis"] = 0.0
-    return feats
-
-
-def extract_features_from_window(window: pd.DataFrame) -> dict:
-    """Признаки одного скользящего окна (WINDOW_SIZE строк)."""
-    feats: dict = {}
-    cols = ("total_vibration", "rms_x", "rms_y", "rms_z")
-    for col in cols:
-        feats.update(_stats_for_axis(window[col].values, col))
-
-    total_mean = max(feats["total_vibration_mean"], 1e-9)
-    feats["ratio_x_total"] = feats["rms_x_mean"] / total_mean
-    feats["ratio_y_total"] = feats["rms_y_mean"] / total_mean
-    feats["ratio_z_total"] = feats["rms_z_mean"] / total_mean
-
-    feats["ratio_x_y"] = feats["rms_x_mean"] / max(feats["rms_y_mean"], 1e-9)
-    feats["ratio_x_z"] = feats["rms_x_mean"] / max(feats["rms_z_mean"], 1e-9)
-    feats["ratio_y_z"] = feats["rms_y_mean"] / max(feats["rms_z_mean"], 1e-9)
-
-    feats["axis_dominance"] = max(
-        feats["rms_x_mean"], feats["rms_y_mean"], feats["rms_z_mean"]
-    ) / total_mean
-
-    total = window["total_vibration"].values
-    if len(total) >= 2:
-        diff = np.abs(np.diff(total))
-        feats["total_vibration_diff_mean"] = float(np.mean(diff))
-        feats["total_vibration_diff_max"] = float(np.max(diff))
-        feats["total_vibration_diff_std"] = float(np.std(diff))
-    else:
-        feats["total_vibration_diff_mean"] = 0.0
-        feats["total_vibration_diff_max"] = 0.0
-        feats["total_vibration_diff_std"] = 0.0
-
-    return feats
+# Группа мотора в X-конфигурации: A — front_right + rear_left, B — front_left + rear_right.
+PROP_GROUP: dict[str, str] = {
+    "front_left": "B",
+    "front_right": "A",
+    "rear_left": "A",
+    "rear_right": "B",
+    "normal": "-",
+}
 
 
 def load_session(csv_path: Path) -> pd.DataFrame | None:
@@ -121,23 +78,27 @@ def load_session(csv_path: Path) -> pd.DataFrame | None:
 
 
 def extract_session_features(
-    df: pd.DataFrame, label: int, step: int = 25
+    df: pd.DataFrame, label: int, session_id: int, step: int = STEP
 ) -> list[dict]:
     rows: list[dict] = []
+    total = df["total_vibration"].values
+    rms_x = df["rms_x"].values
+    rms_y = df["rms_y"].values
+    rms_z = df["rms_z"].values
     for start in range(0, len(df) - WINDOW_SIZE + 1, step):
-        window = df.iloc[start : start + WINDOW_SIZE]
-        feats = extract_features_from_window(window)
+        sl = slice(start, start + WINDOW_SIZE)
+        feats = extract_features(total[sl], rms_x[sl], rms_y[sl], rms_z[sl])
         feats["label"] = label
+        feats["session_id"] = session_id
         rows.append(feats)
     return rows
 
 
 def build_dataset(base: Path) -> pd.DataFrame:
-    """Из base/Normal_mod и base/Deformed_mod/<position> делает таблицу окон."""
     label_to_idx = {name: i for i, name in enumerate(CLASS_LABELS)}
-
     all_rows: list[dict] = []
     counts: dict[str, int] = {n: 0 for n in CLASS_LABELS}
+    next_session_id = 0
 
     normal_dir = base / "Normal_mod"
     if normal_dir.is_dir():
@@ -145,9 +106,12 @@ def build_dataset(base: Path) -> pd.DataFrame:
             df = load_session(csv_path)
             if df is None:
                 continue
-            rows = extract_session_features(df, label=label_to_idx["normal"])
+            rows = extract_session_features(
+                df, label=label_to_idx["normal"], session_id=next_session_id
+            )
             all_rows.extend(rows)
             counts["normal"] += 1
+            next_session_id += 1
 
     deformed_dir = base / "Deformed_mod"
     if deformed_dir.is_dir():
@@ -159,9 +123,12 @@ def build_dataset(base: Path) -> pd.DataFrame:
                 df = load_session(csv_path)
                 if df is None:
                     continue
-                rows = extract_session_features(df, label=label_to_idx[position])
+                rows = extract_session_features(
+                    df, label=label_to_idx[position], session_id=next_session_id
+                )
                 all_rows.extend(rows)
                 counts[position] += 1
+                next_session_id += 1
 
     if not all_rows:
         print(f"Нет данных для обучения в {base}", file=sys.stderr)
@@ -174,6 +141,33 @@ def build_dataset(base: Path) -> pd.DataFrame:
     return pd.DataFrame(all_rows)
 
 
+def make_classifier(kind: str, max_depth: int, min_samples_leaf: int):
+    if kind == "tree":
+        return DecisionTreeClassifier(
+            max_depth=max_depth,
+            min_samples_leaf=min_samples_leaf,
+            class_weight="balanced",
+            random_state=42,
+        )
+    if kind == "rf":
+        return RandomForestClassifier(
+            n_estimators=120,
+            max_depth=18,
+            min_samples_leaf=min_samples_leaf,
+            class_weight="balanced_subsample",
+            n_jobs=-1,
+            random_state=42,
+        )
+    raise SystemExit(f"Неизвестный тип модели: {kind}")
+
+
+def evaluate_groupwise(clf, X, y, groups, n_splits: int = 5) -> tuple[float, float, np.ndarray]:
+    gkf = GroupKFold(n_splits=n_splits)
+    accs = cross_val_score(clf, X, y, groups=groups, cv=gkf, scoring="accuracy", n_jobs=-1)
+    f1s = cross_val_score(clf, X, y, groups=groups, cv=gkf, scoring="f1_macro", n_jobs=-1)
+    return float(accs.mean()), float(f1s.mean()), accs
+
+
 def main() -> None:
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
@@ -182,8 +176,14 @@ def main() -> None:
     parser.add_argument(
         "--base",
         type=Path,
-        default=here / "datasets" / "set_02",
+        default=here / "datasets" / "set_03",
         help="Каталог с Normal_mod/ и Deformed_mod/<position>/",
+    )
+    parser.add_argument(
+        "--model",
+        choices=("tree", "rf"),
+        default="rf",
+        help="Тип модели: tree (одно дерево) или rf (Random Forest, по умолчанию)",
     )
     parser.add_argument("--max-depth", type=int, default=12)
     parser.add_argument("--min-samples-leaf", type=int, default=3)
@@ -191,13 +191,13 @@ def main() -> None:
         "--target-accuracy",
         type=float,
         default=0.95,
-        help="Минимально приемлемая средняя cross-val accuracy",
+        help="Минимально приемлемая GroupKFold accuracy",
     )
     parser.add_argument(
         "--output",
         type=str,
         default="propeller_fault_model.pkl",
-        help="Имя файла модели (сохраняется рядом с этим скриптом)",
+        help="Имя файла модели (сохраняется рядом со скриптом)",
     )
     args = parser.parse_args()
 
@@ -207,43 +207,45 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Источник: {base}")
-    print("Сбор признаков из Normal_mod и Deformed_mod/<position> …")
+    print("Сбор признаков (с FFT + корреляциями) …")
     dataset = build_dataset(base)
-    feature_cols = [c for c in dataset.columns if c != "label"]
+    feature_cols = [c for c in dataset.columns if c not in ("label", "session_id")]
     X = dataset[feature_cols].values
     y = dataset["label"].values
+    groups = dataset["session_id"].values
 
     print("\nОкон по классам:")
     for i, name in enumerate(CLASS_LABELS):
         n = int(np.sum(y == i))
         print(f"  {name:12s} {n}")
     print(f"  всего окон:  {len(y)}")
+    print(f"  всего сессий: {dataset['session_id'].nunique()}")
 
-    clf = DecisionTreeClassifier(
-        max_depth=args.max_depth,
-        min_samples_leaf=args.min_samples_leaf,
-        class_weight="balanced",
-        random_state=42,
-    )
+    clf = make_classifier(args.model, args.max_depth, args.min_samples_leaf)
 
+    print("\n=== Честная валидация (GroupKFold по сессиям, без утечки) ===")
+    acc_g, f1_g, acc_g_all = evaluate_groupwise(clf, X, y, groups, n_splits=5)
+    print(f"GroupKFold accuracy : {acc_g:.4f}  (по фолдам: {np.round(acc_g_all,4).tolist()})")
+    print(f"GroupKFold f1_macro : {f1_g:.4f}")
+
+    print("\n=== Старая валидация (StratifiedKFold по окнам, для сравнения) ===")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    acc_scores = cross_val_score(clf, X, y, cv=skf, scoring="accuracy")
-    f1_scores = cross_val_score(clf, X, y, cv=skf, scoring="f1_macro")
-    print(
-        f"\nCross-validation accuracy : {acc_scores.mean():.4f} ± {acc_scores.std():.4f}"
-    )
-    print(f"Cross-validation f1_macro : {f1_scores.mean():.4f} ± {f1_scores.std():.4f}")
+    acc_s = float(cross_val_score(clf, X, y, cv=skf, scoring="accuracy", n_jobs=-1).mean())
+    f1_s = float(cross_val_score(clf, X, y, cv=skf, scoring="f1_macro", n_jobs=-1).mean())
+    print(f"StratifiedKFold accuracy : {acc_s:.4f}")
+    print(f"StratifiedKFold f1_macro : {f1_s:.4f}")
 
-    if acc_scores.mean() < args.target_accuracy:
+    if acc_g < args.target_accuracy:
         print(
-            f"\n[!] Точность {acc_scores.mean():.4f} ниже целевой "
-            f"{args.target_accuracy:.2f}. Попробуйте --max-depth или больше данных.",
+            f"\n[!] Честная accuracy {acc_g:.4f} ниже целевой {args.target_accuracy:.2f}.\n"
+            f"    Это реалистичная оценка: дерево/лес не различает позицию идеально.\n"
+            f"    Попробуйте --model rf, увеличить --max-depth, добавить данных.",
             file=sys.stderr,
         )
 
     clf.fit(X, y)
     y_pred = clf.predict(X)
-    print("\n=== Отчёт на полной выборке ===")
+    print("\n=== Отчёт на полной выборке (для контроля) ===")
     print(classification_report(y, y_pred, target_names=list(CLASS_LABELS)))
     print("Confusion matrix (rows=truth, cols=pred):")
     print("    " + " ".join(f"{lbl:>11s}" for lbl in CLASS_LABELS))
@@ -251,13 +253,28 @@ def main() -> None:
     for lbl, row in zip(CLASS_LABELS, cm):
         print(f"{lbl:12s} " + " ".join(f"{v:>11d}" for v in row))
 
-    print(f"\nГлубина дерева: {clf.get_depth()}, листьев: {clf.get_n_leaves()}")
-    print("\nДерево решений (top уровни):")
-    print(export_text(clf, feature_names=feature_cols, max_depth=4))
+    print("\n=== Confusion matrix по группам мотора (A/B/normal) ===")
+    group_map = {i: PROP_GROUP[lbl] for i, lbl in enumerate(CLASS_LABELS)}
+    pairs = defaultdict(int)
+    for t, p in zip(y, y_pred):
+        pairs[(group_map[t], group_map[p])] += 1
+    cats = ["A", "B", "-"]
+    print("    " + "  ".join(f"{c:>4s}" for c in cats))
+    for r in cats:
+        print(f"{r:4s}" + "  ".join(f"{pairs[(r,c)]:>4d}" for c in cats))
 
-    importances = clf.feature_importances_
-    top_idx = np.argsort(importances)[::-1][:12]
-    print("Топ-12 признаков:")
+    if args.model == "tree":
+        print(f"\nГлубина: {clf.get_depth()}, листьев: {clf.get_n_leaves()}")
+        print("\nДерево (top уровни):")
+        print(export_text(clf, feature_names=feature_cols, max_depth=4))
+
+    importances = (
+        clf.feature_importances_
+        if hasattr(clf, "feature_importances_")
+        else np.zeros(len(feature_cols))
+    )
+    top_idx = np.argsort(importances)[::-1][:15]
+    print("Топ-15 признаков:")
     for i in top_idx:
         print(f"  {feature_cols[i]:32s} {importances[i]:.4f}")
 
@@ -269,16 +286,19 @@ def main() -> None:
                 "feature_names": feature_cols,
                 "class_labels": list(CLASS_LABELS),
                 "position_ru": POSITION_RU,
+                "prop_group": PROP_GROUP,
                 "window_size": WINDOW_SIZE,
                 "target_accuracy": args.target_accuracy,
-                "cv_accuracy": float(acc_scores.mean()),
+                "cv_accuracy": acc_g,
+                "cv_accuracy_strat": acc_s,
+                "model_kind": args.model,
             },
             f,
         )
     print(f"\nМодель сохранена: {model_path}")
     print(
-        f"Cross-val accuracy: {acc_scores.mean():.4f}; "
-        f"target: {args.target_accuracy:.2f}"
+        f"GroupKFold accuracy: {acc_g:.4f}  |  StratifiedKFold accuracy: {acc_s:.4f}"
+        f"  |  target: {args.target_accuracy:.2f}"
     )
 
 

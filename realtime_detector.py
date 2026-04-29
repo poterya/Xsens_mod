@@ -10,9 +10,12 @@
 - Если уверенность ниже CONFIDENCE_THRESHOLD (по умолчанию 0.65) — вывод не делается.
 - В консоль печатается статус всех 4 винтов и общая уверенность.
 - Время обработки одного пакета ограничено LATENCY_LIMIT_MS (50 мс).
+
+По Ctrl+C: лог CSV + график предсказаний (PNG) в detection_logs/.
 """
 from __future__ import annotations
 
+import os
 import pickle
 import sys
 import time
@@ -20,17 +23,19 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
-from scipy import stats as sps
 
 from DataPacketParser import DataPacketParser, XsDataPacket
 from SerialHandler import SerialHandler
 from XbusPacket import XbusPacket
+from feature_extraction import extract_features
 
 WINDOW_SIZE = 50
 STEP = 10
 CONFIDENCE_THRESHOLD = 0.65
 LATENCY_LIMIT_MS = 50.0
+SMOOTHING_WINDOW = 7  # размер окна сглаживания (мажоритарное голосование)
 
 PROPELLER_LABELS = ("front_left", "front_right", "rear_left", "rear_right")
 PROP_RU = {
@@ -49,62 +54,6 @@ def load_model(model_path: Path) -> dict:
     if missing:
         raise ValueError(f"Модель не содержит обязательных ключей: {missing}")
     return bundle
-
-
-def _stats_for_axis(values: np.ndarray, prefix: str) -> dict:
-    feats: dict = {}
-    feats[f"{prefix}_mean"] = float(np.mean(values))
-    feats[f"{prefix}_std"] = float(np.std(values))
-    feats[f"{prefix}_max"] = float(np.max(values))
-    feats[f"{prefix}_min"] = float(np.min(values))
-    feats[f"{prefix}_range"] = float(np.ptp(values))
-    feats[f"{prefix}_median"] = float(np.median(values))
-    q25, q75 = np.percentile(values, [25, 75])
-    feats[f"{prefix}_iqr"] = float(q75 - q25)
-    feats[f"{prefix}_p90"] = float(np.percentile(values, 90))
-    if values.size >= 8 and np.std(values) > 1e-12:
-        feats[f"{prefix}_skew"] = float(sps.skew(values, bias=False))
-        feats[f"{prefix}_kurtosis"] = float(sps.kurtosis(values, fisher=True, bias=False))
-    else:
-        feats[f"{prefix}_skew"] = 0.0
-        feats[f"{prefix}_kurtosis"] = 0.0
-    return feats
-
-
-def extract_features(
-    total: np.ndarray,
-    rms_x: np.ndarray,
-    rms_y: np.ndarray,
-    rms_z: np.ndarray,
-) -> dict:
-    feats: dict = {}
-    feats.update(_stats_for_axis(total, "total_vibration"))
-    feats.update(_stats_for_axis(rms_x, "rms_x"))
-    feats.update(_stats_for_axis(rms_y, "rms_y"))
-    feats.update(_stats_for_axis(rms_z, "rms_z"))
-
-    total_mean = max(feats["total_vibration_mean"], 1e-9)
-    feats["ratio_x_total"] = feats["rms_x_mean"] / total_mean
-    feats["ratio_y_total"] = feats["rms_y_mean"] / total_mean
-    feats["ratio_z_total"] = feats["rms_z_mean"] / total_mean
-    feats["ratio_x_y"] = feats["rms_x_mean"] / max(feats["rms_y_mean"], 1e-9)
-    feats["ratio_x_z"] = feats["rms_x_mean"] / max(feats["rms_z_mean"], 1e-9)
-    feats["ratio_y_z"] = feats["rms_y_mean"] / max(feats["rms_z_mean"], 1e-9)
-    feats["axis_dominance"] = max(
-        feats["rms_x_mean"], feats["rms_y_mean"], feats["rms_z_mean"]
-    ) / total_mean
-
-    if total.size >= 2:
-        diff = np.abs(np.diff(total))
-        feats["total_vibration_diff_mean"] = float(np.mean(diff))
-        feats["total_vibration_diff_max"] = float(np.max(diff))
-        feats["total_vibration_diff_std"] = float(np.std(diff))
-    else:
-        feats["total_vibration_diff_mean"] = 0.0
-        feats["total_vibration_diff_max"] = 0.0
-        feats["total_vibration_diff_std"] = 0.0
-
-    return feats
 
 
 class RealtimeFaultDetector:
@@ -126,6 +75,8 @@ class RealtimeFaultDetector:
         self.sample_count = 0
         self.start_time = time.time()
         self.prediction_log: list[tuple[float, str, float]] = []
+        self.smoothing_buf: deque = deque(maxlen=SMOOTHING_WINDOW)
+        self.vibration_log: list[tuple[float, float, float, float, float]] = []
 
     def add_accel(self, ax: float, ay: float, az: float) -> None:
         self.acc_x.append(ax)
@@ -151,6 +102,8 @@ class RealtimeFaultDetector:
             self.vib_x.append(rms_x)
             self.vib_y.append(rms_y)
             self.vib_z.append(rms_z)
+            t_rel = time.time() - self.start_time
+            self.vibration_log.append((t_rel, total, rms_x, rms_y, rms_z))
 
     def predict(self) -> tuple[str, float, dict[str, float]] | None:
         if len(self.vib_total) < self.window_size:
@@ -172,8 +125,24 @@ class RealtimeFaultDetector:
             self.class_labels[i]: float(p) for i, p in enumerate(proba)
         }
         elapsed = time.time() - self.start_time
+        self.smoothing_buf.append((pred_label, confidence))
         self.prediction_log.append((elapsed, pred_label, confidence))
         return pred_label, confidence, proba_map
+
+    def smoothed_prediction(self) -> tuple[str, float] | None:
+        """Мажоритарное голосование по последним SMOOTHING_WINDOW предсказаниям.
+        Каждое предсказание учитывается с весом своей уверенности.
+        """
+        if len(self.smoothing_buf) < self.smoothing_buf.maxlen:
+            return None
+        weights: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for lbl, c in self.smoothing_buf:
+            weights[lbl] = weights.get(lbl, 0.0) + c
+            counts[lbl] = counts.get(lbl, 0) + 1
+        best_lbl = max(weights, key=lambda k: (counts[k], weights[k]))
+        avg_conf = weights[best_lbl] / counts[best_lbl]
+        return best_lbl, float(avg_conf)
 
 
 def display_status(
@@ -183,18 +152,18 @@ def display_status(
     rms_total: float | None,
     elapsed_ms: float,
 ) -> None:
-    if confidence < CONFIDENCE_THRESHOLD:
-        return
-
     if pred_label == "normal":
         head_color = "\033[92m"
-        head_text = f"NORMAL (все винты исправны) уверенность={confidence:.2f}"
+        head_text = (
+            f"NORMAL (все винты исправны) "
+            f"уверенность(сглаж.)={confidence:.2f}"
+        )
     else:
         head_color = "\033[91m"
         ru = PROP_RU.get(pred_label, pred_label)
         head_text = (
             f"DEFORMED — поломка винта: {ru} ({pred_label}) "
-            f"уверенность={confidence:.2f}"
+            f"уверенность(сглаж.)={confidence:.2f}"
         )
     reset = "\033[0m"
 
@@ -220,6 +189,160 @@ def display_status(
     print("  " + " | ".join(parts))
 
 
+def plot_prediction_session(
+    prediction_log: list[tuple[float, str, float]],
+    class_labels: list[str],
+    out_path: Path,
+) -> None:
+    """График класса и уверенности по времени; PNG на диск + показ окна при наличии DISPLAY."""
+    if not prediction_log:
+        return
+
+    t = np.array([row[0] for row in prediction_log], dtype=float)
+    labels = [row[1] for row in prediction_log]
+    conf = np.array([row[2] for row in prediction_log], dtype=float)
+    label_to_idx = {lbl: i for i, lbl in enumerate(class_labels)}
+    y = np.array([label_to_idx[l] for l in labels], dtype=int)
+
+    fig, (ax1, ax2) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 6.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.0, 1.0]},
+    )
+
+    for i, lbl in enumerate(class_labels):
+        mask = y == i
+        if np.any(mask):
+            ax1.scatter(
+                t[mask],
+                y[mask],
+                color=f"C{i % 10}",
+                label=lbl,
+                s=22,
+                alpha=0.85,
+                edgecolors="none",
+            )
+
+    ax1.set_yticks(range(len(class_labels)))
+    ax1.set_yticklabels(class_labels, fontsize=9)
+    ax1.set_ylabel("класс")
+    ax1.set_title("Предсказания по времени (сессия realtime_detector)")
+    ax1.legend(loc="upper right", fontsize=8, ncol=2)
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(t, conf, color="0.2", linewidth=0.9, alpha=0.9, label="уверенность")
+    ax2.axhline(
+        CONFIDENCE_THRESHOLD,
+        color="tab:red",
+        linestyle="--",
+        linewidth=1,
+        label=f"порог {CONFIDENCE_THRESHOLD:.2f}",
+    )
+    ax2.set_ylabel("уверенность")
+    ax2.set_xlabel("время, с")
+    ax2.set_ylim(-0.02, 1.05)
+    ax2.legend(loc="lower right", fontsize=8)
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    print(f"График сохранён: {out_path}")
+
+    if os.environ.get("DISPLAY") or sys.platform == "darwin":
+        plt.show()
+    else:
+        print(
+            "DISPLAY не задан — окно не открыто; откройте PNG вручную.",
+            file=sys.stderr,
+        )
+    plt.close(fig)
+
+
+def plot_vibration_session(
+    vibration_log: list[tuple[float, float, float, float, float]],
+    out_path: Path,
+) -> None:
+    """График вибрации (TOTAL и по осям) от времени, рядом с предсказаниями."""
+    if not vibration_log:
+        return
+    t = np.array([row[0] for row in vibration_log])
+    total = np.array([row[1] for row in vibration_log])
+    rx = np.array([row[2] for row in vibration_log])
+    ry = np.array([row[3] for row in vibration_log])
+    rz = np.array([row[4] for row in vibration_log])
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6.5), sharex=True)
+    ax1.plot(t, total, color="tab:blue", linewidth=1.2)
+    ax1.set_ylabel("TOTAL, m/s²")
+    ax1.set_title("Вибрация за сессию")
+    ax1.grid(True, alpha=0.3)
+    ax2.plot(t, rx, label="RMS X", color="tab:red", linewidth=1.0)
+    ax2.plot(t, ry, label="RMS Y", color="tab:green", linewidth=1.0)
+    ax2.plot(t, rz, label="RMS Z", color="tab:blue", linewidth=1.0)
+    ax2.set_xlabel("время, с")
+    ax2.set_ylabel("RMS по осям")
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"График вибрации сохранён: {out_path}")
+
+
+def save_session(
+    detector: RealtimeFaultDetector, flight_dir: Path, latency_violations: int
+) -> None:
+    flight_dir.mkdir(parents=True, exist_ok=True)
+
+    pred_csv = flight_dir / "predictions.csv"
+    with open(pred_csv, "w") as f:
+        f.write("elapsed_s,prediction,confidence\n")
+        for t, p, c in detector.prediction_log:
+            f.write(f"{t:.3f},{p},{c:.4f}\n")
+    print(f"Лог предсказаний: {pred_csv}")
+
+    vib_csv = flight_dir / "vibration_log.csv"
+    with open(vib_csv, "w") as f:
+        f.write("time_seconds,total_vibration,rms_x,rms_y,rms_z\n")
+        for t, total, rx, ry, rz in detector.vibration_log:
+            f.write(f"{t:.3f},{total:.6f},{rx:.6f},{ry:.6f},{rz:.6f}\n")
+    print(f"Лог вибрации: {vib_csv}")
+
+    plot_prediction_session(
+        detector.prediction_log,
+        detector.class_labels,
+        flight_dir / "predictions.png",
+    )
+    plot_vibration_session(detector.vibration_log, flight_dir / "vibration_plot.png")
+
+    info = flight_dir / "session_info.txt"
+    preds = [p[1] for p in detector.prediction_log]
+    counts = {lbl: preds.count(lbl) for lbl in detector.class_labels}
+    top = max(counts.items(), key=lambda kv: kv[1]) if counts else ("-", 0)
+    duration = detector.prediction_log[-1][0] if detector.prediction_log else 0.0
+    with open(info, "w") as f:
+        f.write(f"Started:   {datetime.fromtimestamp(detector.start_time)}\n")
+        f.write(f"Duration:  {duration:.2f} s\n")
+        f.write(f"Predictions total: {len(preds)}\n")
+        for lbl, n in counts.items():
+            f.write(f"  {lbl:12s} {n}\n")
+        f.write(f"Dominant: {top[0]} ({top[1]} predictions)\n")
+        f.write(f"Latency >50ms violations: {latency_violations}\n")
+        if detector.vibration_log:
+            totals = [row[1] for row in detector.vibration_log]
+            f.write(
+                f"Vibration TOTAL  min={min(totals):.4f}  "
+                f"avg={sum(totals)/len(totals):.4f}  max={max(totals):.4f}\n"
+            )
+    print(f"Сводка сессии: {info}")
+
+
 def main() -> None:
     base = Path(__file__).resolve().parent
     model_path = base / "propeller_fault_model.pkl"
@@ -235,6 +358,7 @@ def main() -> None:
     print(
         f"Классы: {', '.join(bundle['class_labels'])} | "
         f"cv_accuracy={cv_acc:.4f} | окно={WINDOW_SIZE}, шаг={STEP}, "
+        f"сглаживание={SMOOTHING_WINDOW}, "
         f"порог уверенности={CONFIDENCE_THRESHOLD:.2f}, лимит={LATENCY_LIMIT_MS:.0f} ms"
     )
     print("=" * 80)
@@ -291,7 +415,14 @@ def main() -> None:
         if result is None:
             return
         pred_label, conf, proba_map = result
-        display_status(pred_label, conf, proba_map, last_total[0], elapsed_ms)
+
+        smoothed = detector.smoothed_prediction()
+        if smoothed is None:
+            return
+        s_label, s_conf = smoothed
+        if s_conf < CONFIDENCE_THRESHOLD:
+            return
+        display_status(s_label, s_conf, proba_map, last_total[0], elapsed_ms)
 
     packet = XbusPacket(on_data_available=on_packet)
 
@@ -317,15 +448,12 @@ def main() -> None:
                     f"{latency_violations[0]}"
                 )
 
-            log_dir = base / "detection_logs"
-            log_dir.mkdir(exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_path = log_dir / f"detection_{ts}.csv"
-            with open(log_path, "w") as f:
-                f.write("elapsed_s,prediction,confidence\n")
-                for t, p, c in detector.prediction_log:
-                    f.write(f"{t:.3f},{p},{c:.4f}\n")
-            print(f"Лог сохранён: {log_path}")
+            flight_dir = base / "detection_logs" / f"flight_{ts}"
+            print(f"Папка полёта: {flight_dir}")
+            save_session(detector, flight_dir, latency_violations[0])
+        else:
+            print("Нет предсказаний — данные не сохранены.")
 
 
 if __name__ == "__main__":
