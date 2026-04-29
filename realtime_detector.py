@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Детекция поломки винта квадрокоптера в реальном времени через Xsens.
+Детекция состояния винтов квадрокоптера в реальном времени через Xsens.
 
-Загружает обученную модель (propeller_fault_model.pkl), подключается к Xsens
-по serial, копит скользящее окно вибрации и каждые WINDOW_SIZE отсчётов
-выдаёт вердикт: NORMAL / DEFORMED (поломка винта).
+Загружает обученное дерево (propeller_fault_model.pkl), копит окно вибрации
+и каждые STEP отсчётов выдаёт вердикт по классам:
+  normal | front_left | front_right | rear_left | rear_right.
+
+Условия:
+- Если уверенность ниже CONFIDENCE_THRESHOLD (по умолчанию 0.65) — вывод не делается.
+- В консоль печатается статус всех 4 винтов и общая уверенность.
+- Время обработки одного пакета ограничено LATENCY_LIMIT_MS (50 мс).
 """
 from __future__ import annotations
 
-import os
 import pickle
 import sys
 import time
@@ -17,48 +21,88 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from scipy import stats as sps
 
+from DataPacketParser import DataPacketParser, XsDataPacket
 from SerialHandler import SerialHandler
 from XbusPacket import XbusPacket
-from DataPacketParser import DataPacketParser, XsDataPacket
-
 
 WINDOW_SIZE = 50
 STEP = 10
-CONFIDENCE_QUEUE_SIZE = 5
+CONFIDENCE_THRESHOLD = 0.65
+LATENCY_LIMIT_MS = 50.0
+
+PROPELLER_LABELS = ("front_left", "front_right", "rear_left", "rear_right")
+PROP_RU = {
+    "front_left": "перед-лев",
+    "front_right": "перед-прав",
+    "rear_left": "зад-лев",
+    "rear_right": "зад-прав",
+}
 
 
 def load_model(model_path: Path) -> dict:
     with open(model_path, "rb") as f:
         bundle = pickle.load(f)
-    required = {"classifier", "feature_names", "window_size"}
-    if not required.issubset(bundle.keys()):
-        raise ValueError(f"Модель не содержит обязательных ключей: {required - bundle.keys()}")
+    required = {"classifier", "feature_names", "window_size", "class_labels"}
+    missing = required - bundle.keys()
+    if missing:
+        raise ValueError(f"Модель не содержит обязательных ключей: {missing}")
     return bundle
 
 
-def extract_features(total: np.ndarray, rms_x: np.ndarray,
-                     rms_y: np.ndarray, rms_z: np.ndarray) -> dict:
+def _stats_for_axis(values: np.ndarray, prefix: str) -> dict:
     feats: dict = {}
-    for name, v in [("total_vibration", total), ("rms_x", rms_x),
-                    ("rms_y", rms_y), ("rms_z", rms_z)]:
-        feats[f"{name}_mean"] = np.mean(v)
-        feats[f"{name}_std"] = np.std(v)
-        feats[f"{name}_max"] = np.max(v)
-        feats[f"{name}_min"] = np.min(v)
-        feats[f"{name}_range"] = np.ptp(v)
-        feats[f"{name}_median"] = np.median(v)
+    feats[f"{prefix}_mean"] = float(np.mean(values))
+    feats[f"{prefix}_std"] = float(np.std(values))
+    feats[f"{prefix}_max"] = float(np.max(values))
+    feats[f"{prefix}_min"] = float(np.min(values))
+    feats[f"{prefix}_range"] = float(np.ptp(values))
+    feats[f"{prefix}_median"] = float(np.median(values))
+    q25, q75 = np.percentile(values, [25, 75])
+    feats[f"{prefix}_iqr"] = float(q75 - q25)
+    feats[f"{prefix}_p90"] = float(np.percentile(values, 90))
+    if values.size >= 8 and np.std(values) > 1e-12:
+        feats[f"{prefix}_skew"] = float(sps.skew(values, bias=False))
+        feats[f"{prefix}_kurtosis"] = float(sps.kurtosis(values, fisher=True, bias=False))
+    else:
+        feats[f"{prefix}_skew"] = 0.0
+        feats[f"{prefix}_kurtosis"] = 0.0
+    return feats
 
-    feats["ratio_x_total"] = feats["rms_x_mean"] / max(feats["total_vibration_mean"], 1e-9)
-    feats["ratio_y_total"] = feats["rms_y_mean"] / max(feats["total_vibration_mean"], 1e-9)
-    feats["ratio_z_total"] = feats["rms_z_mean"] / max(feats["total_vibration_mean"], 1e-9)
 
-    if len(total) >= 2:
-        feats["total_vibration_diff_mean"] = np.mean(np.abs(np.diff(total)))
-        feats["total_vibration_diff_max"] = np.max(np.abs(np.diff(total)))
+def extract_features(
+    total: np.ndarray,
+    rms_x: np.ndarray,
+    rms_y: np.ndarray,
+    rms_z: np.ndarray,
+) -> dict:
+    feats: dict = {}
+    feats.update(_stats_for_axis(total, "total_vibration"))
+    feats.update(_stats_for_axis(rms_x, "rms_x"))
+    feats.update(_stats_for_axis(rms_y, "rms_y"))
+    feats.update(_stats_for_axis(rms_z, "rms_z"))
+
+    total_mean = max(feats["total_vibration_mean"], 1e-9)
+    feats["ratio_x_total"] = feats["rms_x_mean"] / total_mean
+    feats["ratio_y_total"] = feats["rms_y_mean"] / total_mean
+    feats["ratio_z_total"] = feats["rms_z_mean"] / total_mean
+    feats["ratio_x_y"] = feats["rms_x_mean"] / max(feats["rms_y_mean"], 1e-9)
+    feats["ratio_x_z"] = feats["rms_x_mean"] / max(feats["rms_z_mean"], 1e-9)
+    feats["ratio_y_z"] = feats["rms_y_mean"] / max(feats["rms_z_mean"], 1e-9)
+    feats["axis_dominance"] = max(
+        feats["rms_x_mean"], feats["rms_y_mean"], feats["rms_z_mean"]
+    ) / total_mean
+
+    if total.size >= 2:
+        diff = np.abs(np.diff(total))
+        feats["total_vibration_diff_mean"] = float(np.mean(diff))
+        feats["total_vibration_diff_max"] = float(np.max(diff))
+        feats["total_vibration_diff_std"] = float(np.std(diff))
     else:
         feats["total_vibration_diff_mean"] = 0.0
         feats["total_vibration_diff_max"] = 0.0
+        feats["total_vibration_diff_std"] = 0.0
 
     return feats
 
@@ -66,7 +110,8 @@ def extract_features(total: np.ndarray, rms_x: np.ndarray,
 class RealtimeFaultDetector:
     def __init__(self, model_bundle: dict, window_size: int = WINDOW_SIZE):
         self.clf = model_bundle["classifier"]
-        self.feature_names = model_bundle["feature_names"]
+        self.feature_names: list[str] = model_bundle["feature_names"]
+        self.class_labels: list[str] = list(model_bundle["class_labels"])
         self.window_size = window_size
 
         self.acc_x: deque = deque(maxlen=window_size)
@@ -79,9 +124,8 @@ class RealtimeFaultDetector:
         self.vib_z: deque = deque(maxlen=window_size)
 
         self.sample_count = 0
-        self.prediction_log: list[tuple[float, int, float]] = []
-        self.confidence_queue: deque = deque(maxlen=CONFIDENCE_QUEUE_SIZE)
         self.start_time = time.time()
+        self.prediction_log: list[tuple[float, str, float]] = []
 
     def add_accel(self, ax: float, ay: float, az: float) -> None:
         self.acc_x.append(ax)
@@ -90,64 +134,90 @@ class RealtimeFaultDetector:
         self.sample_count += 1
 
         if len(self.acc_x) >= self.window_size:
-            mean_x = np.mean(self.acc_x)
-            mean_y = np.mean(self.acc_y)
-            mean_z = np.mean(self.acc_z)
-
-            vx = np.array(self.acc_x) - mean_x
-            vy = np.array(self.acc_y) - mean_y
-            vz = np.array(self.acc_z) - mean_z
-
-            rms_x = np.sqrt(np.mean(vx ** 2))
-            rms_y = np.sqrt(np.mean(vy ** 2))
-            rms_z = np.sqrt(np.mean(vz ** 2))
-            total = np.sqrt(rms_x ** 2 + rms_y ** 2 + rms_z ** 2)
-
+            ax_arr = np.fromiter(self.acc_x, dtype=float, count=self.window_size)
+            ay_arr = np.fromiter(self.acc_y, dtype=float, count=self.window_size)
+            az_arr = np.fromiter(self.acc_z, dtype=float, count=self.window_size)
+            mean_x = ax_arr.mean()
+            mean_y = ay_arr.mean()
+            mean_z = az_arr.mean()
+            vx = ax_arr - mean_x
+            vy = ay_arr - mean_y
+            vz = az_arr - mean_z
+            rms_x = float(np.sqrt(np.mean(vx * vx)))
+            rms_y = float(np.sqrt(np.mean(vy * vy)))
+            rms_z = float(np.sqrt(np.mean(vz * vz)))
+            total = float(np.sqrt(rms_x ** 2 + rms_y ** 2 + rms_z ** 2))
             self.vib_total.append(total)
             self.vib_x.append(rms_x)
             self.vib_y.append(rms_y)
             self.vib_z.append(rms_z)
 
-    def predict(self) -> tuple[int, float] | None:
+    def predict(self) -> tuple[str, float, dict[str, float]] | None:
         if len(self.vib_total) < self.window_size:
             return None
-
         feats = extract_features(
-            np.array(self.vib_total),
-            np.array(self.vib_x),
-            np.array(self.vib_y),
-            np.array(self.vib_z),
+            np.fromiter(self.vib_total, dtype=float, count=self.window_size),
+            np.fromiter(self.vib_x, dtype=float, count=self.window_size),
+            np.fromiter(self.vib_y, dtype=float, count=self.window_size),
+            np.fromiter(self.vib_z, dtype=float, count=self.window_size),
+        )
+        x_vec = np.array(
+            [[feats.get(name, 0.0) for name in self.feature_names]], dtype=float
+        )
+        proba = self.clf.predict_proba(x_vec)[0]
+        best_idx = int(np.argmax(proba))
+        pred_label = self.class_labels[best_idx]
+        confidence = float(proba[best_idx])
+        proba_map = {
+            self.class_labels[i]: float(p) for i, p in enumerate(proba)
+        }
+        elapsed = time.time() - self.start_time
+        self.prediction_log.append((elapsed, pred_label, confidence))
+        return pred_label, confidence, proba_map
+
+
+def display_status(
+    pred_label: str,
+    confidence: float,
+    proba_map: dict[str, float],
+    rms_total: float | None,
+    elapsed_ms: float,
+) -> None:
+    if confidence < CONFIDENCE_THRESHOLD:
+        return
+
+    if pred_label == "normal":
+        head_color = "\033[92m"
+        head_text = f"NORMAL (все винты исправны) уверенность={confidence:.2f}"
+    else:
+        head_color = "\033[91m"
+        ru = PROP_RU.get(pred_label, pred_label)
+        head_text = (
+            f"DEFORMED — поломка винта: {ru} ({pred_label}) "
+            f"уверенность={confidence:.2f}"
+        )
+    reset = "\033[0m"
+
+    parts: list[str] = []
+    p_normal = proba_map.get("normal", 0.0)
+    for prop in PROPELLER_LABELS:
+        p_def = proba_map.get(prop, 0.0)
+        ok_score = max(p_normal, 1.0 - p_def)
+        if pred_label == prop:
+            label = "ПОЛОМКА"
+            color = "\033[91m"
+            score = p_def
+        else:
+            label = "OK"
+            color = "\033[92m"
+            score = max(ok_score, 1.0 - p_def)
+        parts.append(
+            f"{PROP_RU[prop]:>10s}: {color}{label:<8s}{reset} {score:.2f}"
         )
 
-        x_vec = np.array([[feats.get(f, 0.0) for f in self.feature_names]])
-        pred = self.clf.predict(x_vec)[0]
-        proba = self.clf.predict_proba(x_vec)[0]
-        confidence = float(proba[pred])
-
-        self.confidence_queue.append(pred)
-        elapsed = time.time() - self.start_time
-        self.prediction_log.append((elapsed, pred, confidence))
-        return int(pred), confidence
-
-    @property
-    def smoothed_label(self) -> int | None:
-        if len(self.confidence_queue) < CONFIDENCE_QUEUE_SIZE:
-            return None
-        return int(np.round(np.mean(self.confidence_queue)))
-
-
-def display_status(pred: int, confidence: float, smoothed: int | None,
-                   rms_total: float | None) -> None:
-    label = "DEFORMED" if pred == 1 else "NORMAL"
-    color = "\033[91m" if pred == 1 else "\033[92m"
-    reset = "\033[0m"
-    smooth_str = ""
-    if smoothed is not None:
-        s_label = "DEFORMED" if smoothed == 1 else "NORMAL"
-        s_color = "\033[91m" if smoothed == 1 else "\033[92m"
-        smooth_str = f"  сглаж: {s_color}{s_label}{reset}"
-    vib_str = f"  vib={rms_total:.4f}" if rms_total else ""
-    print(f"{color}[{label}]{reset} уверенность={confidence:.2f}{smooth_str}{vib_str}")
+    vib_str = f" vib={rms_total:.4f}" if rms_total is not None else ""
+    print(f"{head_color}[{head_text}]{reset}{vib_str}  ({elapsed_ms:.1f} ms)")
+    print("  " + " | ".join(parts))
 
 
 def main() -> None:
@@ -160,9 +230,14 @@ def main() -> None:
 
     bundle = load_model(model_path)
     detector = RealtimeFaultDetector(bundle)
+    cv_acc = bundle.get("cv_accuracy", float("nan"))
     print(f"Модель загружена: {model_path.name}")
-    print(f"Окно: {WINDOW_SIZE}, шаг предсказания: {STEP}, сглаживание: {CONFIDENCE_QUEUE_SIZE}")
-    print("=" * 60)
+    print(
+        f"Классы: {', '.join(bundle['class_labels'])} | "
+        f"cv_accuracy={cv_acc:.4f} | окно={WINDOW_SIZE}, шаг={STEP}, "
+        f"порог уверенности={CONFIDENCE_THRESHOLD:.2f}, лимит={LATENCY_LIMIT_MS:.0f} ms"
+    )
+    print("=" * 80)
 
     serial = SerialHandler("/dev/ttyUSB0", 115200)
 
@@ -187,16 +262,16 @@ def main() -> None:
 
     step_counter = [0]
     last_total = [None]
+    latency_violations = [0]
 
     def on_packet(raw_packet):
+        t_pkt = time.perf_counter()
         xbus_data = XsDataPacket()
         DataPacketParser.parse_data_packet(raw_packet, xbus_data)
-
         if not xbus_data.accAvailable:
             return
 
         detector.add_accel(xbus_data.acc[0], xbus_data.acc[1], xbus_data.acc[2])
-
         if len(detector.vib_total) > 0:
             last_total[0] = float(detector.vib_total[-1])
 
@@ -205,11 +280,18 @@ def main() -> None:
             return
 
         result = detector.predict()
+        elapsed_ms = (time.perf_counter() - t_pkt) * 1000.0
+        if elapsed_ms > LATENCY_LIMIT_MS:
+            latency_violations[0] += 1
+            print(
+                f"\033[93m[!] обработка пакета {elapsed_ms:.1f} мс > "
+                f"{LATENCY_LIMIT_MS:.0f} мс\033[0m",
+                file=sys.stderr,
+            )
         if result is None:
             return
-
-        pred, conf = result
-        display_status(pred, conf, detector.smoothed_label, last_total[0])
+        pred_label, conf, proba_map = result
+        display_status(pred_label, conf, proba_map, last_total[0], elapsed_ms)
 
     packet = XbusPacket(on_data_available=on_packet)
 
@@ -219,16 +301,21 @@ def main() -> None:
             if byte:
                 packet.feed_byte(byte)
     except KeyboardInterrupt:
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 80)
         print("Остановлено.")
         if detector.prediction_log:
             preds = [p[1] for p in detector.prediction_log]
-            n_normal = preds.count(0)
-            n_deformed = preds.count(1)
-            print(f"Предсказаний: {len(preds)} (Normal={n_normal}, Deformed={n_deformed})")
-            ratio = n_deformed / max(len(preds), 1)
-            verdict = "DEFORMED" if ratio > 0.5 else "NORMAL"
-            print(f"Итоговый вердикт сессии: {verdict} (deformed ratio={ratio:.2f})")
+            counts = {lbl: preds.count(lbl) for lbl in detector.class_labels}
+            print("Распределение предсказаний за сессию:")
+            for lbl, n in counts.items():
+                print(f"  {lbl:12s} {n}")
+            top = max(counts.items(), key=lambda kv: kv[1])
+            print(f"Доминирующий класс: {top[0]} ({top[1]} предсказаний)")
+            if latency_violations[0]:
+                print(
+                    f"Превышений лимита {LATENCY_LIMIT_MS:.0f} мс: "
+                    f"{latency_violations[0]}"
+                )
 
             log_dir = base / "detection_logs"
             log_dir.mkdir(exist_ok=True)
