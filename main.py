@@ -99,9 +99,128 @@ class VibrationAnalyzer:
         return filename
 
 
-def on_live_data_available(packet, vib_analyzer=None):
+class FullXsensLog:
+    """Полный снимок распарсенного пакета Xsens (отдельно от vibration_log.csv)."""
+
+    CSV_NAME = "xsens_full_log.csv"
+
+    def __init__(self):
+        self._t0 = time.time()
+        self.rows = []
+
+    def add_packet(self, d: XsDataPacket):
+        t = time.time() - self._t0
+        r2d = XsDataPacket.rad2deg
+
+        def f3(v, avail):
+            if not avail:
+                return ("", "", "")
+            return (f"{v[0]:.8f}", f"{v[1]:.8f}", f"{v[2]:.8f}")
+
+        def f4(v, avail):
+            if not avail:
+                return ("", "", "", "")
+            return (f"{v[0]:.8f}", f"{v[1]:.8f}", f"{v[2]:.8f}", f"{v[3]:.8f}")
+
+        ex, ey, ez = f3(d.euler, d.eulerAvailable)
+        q0, q1, q2, q3 = f4(d.quat, d.quaternionAvailable)
+        ax, ay, az = f3(d.acc, d.accAvailable)
+        fax, fay, faz = f3(d.freeAcc, d.freeAccAvailable)
+        # rot в рад/с → как в консоли, в °/с
+        if d.rotAvailable:
+            gx = f"{d.rot[0] * r2d:.8f}"
+            gy = f"{d.rot[1] * r2d:.8f}"
+            gz = f"{d.rot[2] * r2d:.8f}"
+        else:
+            gx = gy = gz = ""
+        mx, my, mz = f3(d.mag, d.magAvailable)
+        lat, lon = (f"{d.latlon[0]:.8f}", f"{d.latlon[1]:.8f}") if d.latlonAvailable else ("", "")
+        alt = f"{d.altitude:.8f}" if d.altitudeAvailable else ""
+        vx, vy, vz = f3(d.vel, d.velocityAvailable)
+        dvx, dvy, dvz = f3(d.deltaV, d.deltaVAvailable)
+        dq0, dq1, dq2, dq3 = f4(d.deltaQ, d.deltaQAvailable)
+
+        pc = str(d.packetCounter) if d.packetCounterAvailable else ""
+        stf = str(d.sampleTimeFine) if d.sampleTimeFineAvailable else ""
+        utc = f"{d.utcTime:.8f}" if d.utcTimeAvailable else ""
+        sw = str(d.statusWord) if d.statusWordAvailable else ""
+        temp = f"{d.temperature:.8f}" if d.temperatureAvailable else ""
+        baro = str(d.baropressure) if d.baropressureAvailable else ""
+
+        self.rows.append(
+            (
+                f"{t:.6f}",
+                pc,
+                stf,
+                utc,
+                ex,
+                ey,
+                ez,
+                q0,
+                q1,
+                q2,
+                q3,
+                ax,
+                ay,
+                az,
+                fax,
+                fay,
+                faz,
+                gx,
+                gy,
+                gz,
+                mx,
+                my,
+                mz,
+                lat,
+                lon,
+                alt,
+                vx,
+                vy,
+                vz,
+                sw,
+                temp,
+                baro,
+                dvx,
+                dvy,
+                dvz,
+                dq0,
+                dq1,
+                dq2,
+                dq3,
+            )
+        )
+
+    def save(self, directory):
+        path = os.path.join(directory, self.CSV_NAME)
+        header = (
+            "time_seconds,packet_counter,sample_time_fine,utc_time,"
+            "euler_roll_deg,euler_pitch_deg,euler_yaw_deg,"
+            "quat_w,quat_x,quat_y,quat_z,"
+            "acc_x,acc_y,acc_z,"
+            "free_acc_x,free_acc_y,free_acc_z,"
+            "gyro_x_dps,gyro_y_dps,gyro_z_dps,"
+            "mag_x,mag_y,mag_z,"
+            "lat,lon,altitude,"
+            "vel_x,vel_y,vel_z,"
+            "status_word,temperature,baropressure,"
+            "delta_v_x,delta_v_y,delta_v_z,"
+            "delta_q_w,delta_q_x,delta_q_y,delta_q_z\n"
+        )
+        with open(path, "w") as f:
+            f.write(header)
+            for row in self.rows:
+                f.write(",".join(row) + "\n")
+        print(f"📁 Полный лог Xsens: {path}")
+        return path
+
+
+def on_live_data_available(packet, vib_analyzer=None, full_log=None):
     xbus_data = XsDataPacket() 
     DataPacketParser.parse_data_packet(packet, xbus_data)
+
+    if full_log is not None:
+        full_log.add_packet(xbus_data)
 
     # Расчёт вибрации
     if vib_analyzer and xbus_data.accAvailable:
@@ -131,6 +250,7 @@ def on_live_data_available(packet, vib_analyzer=None):
 
 def main():
     vib_analyzer = None
+    full_xsens = None
     simulation_dir = None
     
     try:
@@ -167,7 +287,10 @@ def main():
         vib_analyzer = VibrationAnalyzer(window_size=20)
         print(f"Окно расчёта вибрации: {vib_analyzer.window_size} сэмплов")
 
-        packet = XbusPacket(on_data_available=lambda p: on_live_data_available(p, vib_analyzer))
+        full_xsens = FullXsensLog()
+        packet = XbusPacket(
+            on_data_available=lambda p: on_live_data_available(p, vib_analyzer, full_xsens)
+        )
 
         while True:
             byte = serial.read_byte()
@@ -178,6 +301,9 @@ def main():
         print("\n\n" + "=" * 80)
         print("Остановлено пользователем. Сохраняем данные...")
         
+        if full_xsens is not None and len(full_xsens.rows) > 0:
+            full_xsens.save(simulation_dir)
+
         if vib_analyzer and len(vib_analyzer.vibration_log) > 0:
             # Сохраняем лог и график во временную папку
             vib_analyzer.save_log(simulation_dir)
@@ -206,6 +332,8 @@ def main():
             print(f"   Всего семплов: {len(vib_analyzer.vibration_log)}")
             
             print(f"💾 Данные сохранены локально: {simulation_dir}")
+        elif full_xsens and len(full_xsens.rows) > 0:
+            print(f"💾 Полный лог Xsens сохранён (вибрация не накопилась — мало сэмплов в окне): {simulation_dir}")
         else:
             print("Нет данных для сохранения")
         

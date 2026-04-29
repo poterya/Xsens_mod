@@ -22,7 +22,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.widgets import Button, RadioButtons, SpanSelector
+from matplotlib.widgets import Button, RadioButtons, SpanSelector, TextBox
 from matplotlib.lines import Line2D
 
 # Позиция винта: подпись в UI (A/B по схеме моторов) → подпапка в Deformed_mod
@@ -234,10 +234,12 @@ def main() -> None:
     )
     title_txt = fig.suptitle("", fontsize=9, y=0.97)
 
-    ax_prev = fig.add_axes([0.08, 0.02, 0.1, 0.06])
-    ax_next = fig.add_axes([0.22, 0.02, 0.1, 0.06])
-    ax_save = fig.add_axes([0.36, 0.02, 0.28, 0.06])
-    for bax in (ax_prev, ax_next, ax_save):
+    btn_y, btn_h = 0.07, 0.06
+    ax_prev = fig.add_axes([0.08, btn_y, 0.1, btn_h])
+    ax_next = fig.add_axes([0.20, btn_y, 0.1, btn_h])
+    ax_num = fig.add_axes([0.31, btn_y, 0.11, btn_h])
+    ax_save = fig.add_axes([0.43, btn_y, 0.28, btn_h])
+    for bax in (ax_prev, ax_next, ax_num, ax_save):
         bax.set_zorder(20)
 
     btn_prev = Button(ax_prev, "Назад")
@@ -245,6 +247,7 @@ def main() -> None:
     btn_save = Button(ax_save, f"Сохранить в {output_hint}")
 
     span_keepalive: list[SpanSelector] = []
+    num_tb_ref: list[TextBox | None] = [None]
 
     def redraw_plot() -> None:
         while span_keepalive:
@@ -294,9 +297,41 @@ def main() -> None:
         title_txt.set_text(
             f"{data_root.name} — файл {idx[0] + 1} из {len(plottable)}: {path.name}\n"
             f"Мышью выделите зону по оси X → «Сохранить». Вывод: {output_hint}.{pos_hint} "
-            "Клик по линии — ряд; по полю — путь к файлу"
+            "Клик по линии — ряд; по полю — путь к файлу. В поле «№» — номер файла, Enter."
         )
         fig.canvas.draw_idle()
+        tb = num_tb_ref[0]
+        if tb is not None:
+            tb.set_val(str(idx[0] + 1))
+
+    def on_num_submit(text: str) -> None:
+        s = text.strip()
+        try:
+            n = int(s)
+        except ValueError:
+            msg = f"Введите целое число от 1 до {len(plottable)}"
+            status_txt.set_text(msg)
+            print(msg, file=sys.stderr)
+            tb = num_tb_ref[0]
+            if tb is not None:
+                tb.set_val(str(idx[0] + 1))
+            fig.canvas.draw_idle()
+            return
+        if n < 1 or n > len(plottable):
+            msg = f"Номер должен быть от 1 до {len(plottable)}"
+            status_txt.set_text(msg)
+            print(msg, file=sys.stderr)
+            tb = num_tb_ref[0]
+            if tb is not None:
+                tb.set_val(str(idx[0] + 1))
+            fig.canvas.draw_idle()
+            return
+        idx[0] = n - 1
+        redraw_plot()
+
+    tb_num = TextBox(ax_num, "№ ", initial=str(idx[0] + 1))
+    tb_num.on_submit(on_num_submit)
+    num_tb_ref[0] = tb_num
 
     def on_prev(_event):
         if idx[0] > 0:
