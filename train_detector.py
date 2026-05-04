@@ -2,18 +2,22 @@
 """
 Обучение классификатора состояния винтов квадрокоптера по вибрационным данным.
 
-Классы (multiclass):
+Классы (multiclass, по умолчанию):
   normal       — все винты целые
   front_left   — повреждён передний левый (мотор B)
   front_right  — повреждён передний правый (мотор A)
   rear_left    — повреждён задний левый  (мотор A)
   rear_right   — повреждён задний правый (мотор B)
 
-Особенности этой версии:
+Бинарный режим (--binary):
+  normal — все винты целые
+  fault  — любая поломка (front_left | front_right | rear_left | rear_right)
+
+Особенности:
 - Расширенные признаки: спектр (FFT) + корреляции/асимметрии между осями
   (см. feature_extraction.extract_features).
 - Честная валидация GroupKFold по сессиям (без утечки соседних окон).
-- По умолчанию RandomForest; ключ --model tree оставляет старое дерево.
+- RandomForest по умолчанию; --model tree — одно решающее дерево.
 """
 from __future__ import annotations
 
@@ -33,15 +37,16 @@ from sklearn.tree import DecisionTreeClassifier, export_text
 from feature_extraction import extract_features
 
 WINDOW_SIZE = 50
-STEP = 25
+STEP = 10
 
-CLASS_LABELS: tuple[str, ...] = (
+CLASS_LABELS_FULL: tuple[str, ...] = (
     "normal",
     "front_left",
     "front_right",
     "rear_left",
     "rear_right",
 )
+CLASS_LABELS_BINARY: tuple[str, ...] = ("normal", "fault")
 
 POSITION_RU: dict[str, str] = {
     "normal": "норма",
@@ -49,6 +54,7 @@ POSITION_RU: dict[str, str] = {
     "front_right": "передний правый",
     "rear_left": "задний левый",
     "rear_right": "задний правый",
+    "fault": "поломка",
 }
 
 # Группа мотора в X-конфигурации: A — front_right + rear_left, B — front_left + rear_right.
@@ -94,10 +100,10 @@ def extract_session_features(
     return rows
 
 
-def build_dataset(base: Path) -> pd.DataFrame:
-    label_to_idx = {name: i for i, name in enumerate(CLASS_LABELS)}
+def build_dataset(base: Path, class_labels: tuple[str, ...], binary: bool) -> pd.DataFrame:
+    label_to_idx = {name: i for i, name in enumerate(class_labels)}
     all_rows: list[dict] = []
-    counts: dict[str, int] = {n: 0 for n in CLASS_LABELS}
+    counts: dict[str, int] = {n: 0 for n in class_labels}
     next_session_id = 0
 
     normal_dir = base / "Normal_mod"
@@ -115,19 +121,22 @@ def build_dataset(base: Path) -> pd.DataFrame:
 
     deformed_dir = base / "Deformed_mod"
     if deformed_dir.is_dir():
-        for position in CLASS_LABELS[1:]:
+        positions_on_disk = ("front_left", "front_right", "rear_left", "rear_right")
+        for position in positions_on_disk:
             pos_dir = deformed_dir / position
             if not pos_dir.is_dir():
                 continue
+            target_label = "fault" if binary else position
+            target_idx = label_to_idx[target_label]
             for csv_path in sorted(pos_dir.rglob("vibration_log.csv")):
                 df = load_session(csv_path)
                 if df is None:
                     continue
                 rows = extract_session_features(
-                    df, label=label_to_idx[position], session_id=next_session_id
+                    df, label=target_idx, session_id=next_session_id
                 )
                 all_rows.extend(rows)
-                counts[position] += 1
+                counts[target_label] += 1
                 next_session_id += 1
 
     if not all_rows:
@@ -135,7 +144,7 @@ def build_dataset(base: Path) -> pd.DataFrame:
         sys.exit(1)
 
     print("Сессий по классам:")
-    for name in CLASS_LABELS:
+    for name in class_labels:
         print(f"  {name:12s} {counts[name]}")
 
     return pd.DataFrame(all_rows)
@@ -151,9 +160,10 @@ def make_classifier(kind: str, max_depth: int, min_samples_leaf: int):
         )
     if kind == "rf":
         return RandomForestClassifier(
-            n_estimators=120,
-            max_depth=18,
-            min_samples_leaf=min_samples_leaf,
+            n_estimators=400,
+            max_depth=None,
+            min_samples_leaf=max(1, min_samples_leaf - 2),
+            max_features="sqrt",
             class_weight="balanced_subsample",
             n_jobs=-1,
             random_state=42,
@@ -199,7 +209,15 @@ def main() -> None:
         default="propeller_fault_model.pkl",
         help="Имя файла модели (сохраняется рядом со скриптом)",
     )
+    parser.add_argument(
+        "--binary",
+        action="store_true",
+        help="Бинарный режим: 2 класса (normal vs fault), позиция игнорируется",
+    )
     args = parser.parse_args()
+    class_labels: tuple[str, ...] = (
+        CLASS_LABELS_BINARY if args.binary else CLASS_LABELS_FULL
+    )
 
     base = args.base.resolve()
     if not base.is_dir():
@@ -207,15 +225,16 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Источник: {base}")
+    print(f"Режим: {'бинарный (normal/fault)' if args.binary else 'мультикласс (5 классов)'}")
     print("Сбор признаков (с FFT + корреляциями) …")
-    dataset = build_dataset(base)
+    dataset = build_dataset(base, class_labels, binary=args.binary)
     feature_cols = [c for c in dataset.columns if c not in ("label", "session_id")]
     X = dataset[feature_cols].values
     y = dataset["label"].values
     groups = dataset["session_id"].values
 
     print("\nОкон по классам:")
-    for i, name in enumerate(CLASS_LABELS):
+    for i, name in enumerate(class_labels):
         n = int(np.sum(y == i))
         print(f"  {name:12s} {n}")
     print(f"  всего окон:  {len(y)}")
@@ -246,22 +265,23 @@ def main() -> None:
     clf.fit(X, y)
     y_pred = clf.predict(X)
     print("\n=== Отчёт на полной выборке (для контроля) ===")
-    print(classification_report(y, y_pred, target_names=list(CLASS_LABELS)))
+    print(classification_report(y, y_pred, target_names=list(class_labels)))
     print("Confusion matrix (rows=truth, cols=pred):")
-    print("    " + " ".join(f"{lbl:>11s}" for lbl in CLASS_LABELS))
-    cm = confusion_matrix(y, y_pred, labels=list(range(len(CLASS_LABELS))))
-    for lbl, row in zip(CLASS_LABELS, cm):
+    print("    " + " ".join(f"{lbl:>11s}" for lbl in class_labels))
+    cm = confusion_matrix(y, y_pred, labels=list(range(len(class_labels))))
+    for lbl, row in zip(class_labels, cm):
         print(f"{lbl:12s} " + " ".join(f"{v:>11d}" for v in row))
 
-    print("\n=== Confusion matrix по группам мотора (A/B/normal) ===")
-    group_map = {i: PROP_GROUP[lbl] for i, lbl in enumerate(CLASS_LABELS)}
-    pairs = defaultdict(int)
-    for t, p in zip(y, y_pred):
-        pairs[(group_map[t], group_map[p])] += 1
-    cats = ["A", "B", "-"]
-    print("    " + "  ".join(f"{c:>4s}" for c in cats))
-    for r in cats:
-        print(f"{r:4s}" + "  ".join(f"{pairs[(r,c)]:>4d}" for c in cats))
+    if not args.binary:
+        print("\n=== Confusion matrix по группам мотора (A/B/normal) ===")
+        group_map = {i: PROP_GROUP[lbl] for i, lbl in enumerate(class_labels)}
+        pairs = defaultdict(int)
+        for t, p in zip(y, y_pred):
+            pairs[(group_map[t], group_map[p])] += 1
+        cats = ["A", "B", "-"]
+        print("    " + "  ".join(f"{c:>4s}" for c in cats))
+        for r in cats:
+            print(f"{r:4s}" + "  ".join(f"{pairs[(r,c)]:>4d}" for c in cats))
 
     if args.model == "tree":
         print(f"\nГлубина: {clf.get_depth()}, листьев: {clf.get_n_leaves()}")
@@ -284,7 +304,7 @@ def main() -> None:
             {
                 "classifier": clf,
                 "feature_names": feature_cols,
-                "class_labels": list(CLASS_LABELS),
+                "class_labels": list(class_labels),
                 "position_ru": POSITION_RU,
                 "prop_group": PROP_GROUP,
                 "window_size": WINDOW_SIZE,
@@ -292,6 +312,7 @@ def main() -> None:
                 "cv_accuracy": acc_g,
                 "cv_accuracy_strat": acc_s,
                 "model_kind": args.model,
+                "task": "binary" if args.binary else "multiclass",
             },
             f,
         )
