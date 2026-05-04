@@ -186,7 +186,7 @@ def main() -> None:
         sys.exit(1)
 
     idx = [0]
-    region = [None, None]  # xmin, xmax по оси X после выделения SpanSelector
+    regions: list[tuple[float, float]] = []  # все выделенные интервалы по оси X
 
     base_path = args.base.resolve()
     datasets_dir = args.datasets_dir.resolve() if args.datasets_dir is not None else None
@@ -238,23 +238,26 @@ def main() -> None:
     ax_prev = fig.add_axes([0.08, btn_y, 0.1, btn_h])
     ax_next = fig.add_axes([0.20, btn_y, 0.1, btn_h])
     ax_num = fig.add_axes([0.31, btn_y, 0.11, btn_h])
-    ax_save = fig.add_axes([0.43, btn_y, 0.28, btn_h])
-    for bax in (ax_prev, ax_next, ax_num, ax_save):
+    ax_save = fig.add_axes([0.43, btn_y, 0.21, btn_h])
+    ax_clear = fig.add_axes([0.65, btn_y, 0.11, btn_h])
+    for bax in (ax_prev, ax_next, ax_num, ax_save, ax_clear):
         bax.set_zorder(20)
 
     btn_prev = Button(ax_prev, "Назад")
     btn_next = Button(ax_next, "Вперёд")
     btn_save = Button(ax_save, f"Сохранить в {output_hint}")
+    btn_clear = Button(ax_clear, "Очистить")
 
     span_keepalive: list[SpanSelector] = []
+    region_patches: list = []
     num_tb_ref: list[TextBox | None] = [None]
 
     def redraw_plot() -> None:
         while span_keepalive:
             sp = span_keepalive.pop()
             sp.disconnect_events()
-        region[0] = None
-        region[1] = None
+        regions.clear()
+        region_patches.clear()
 
         ax_plot.clear()
         path, df, x, y_cols, x_label, _x_col = plottable[idx[0]]
@@ -271,10 +274,15 @@ def main() -> None:
             ax_plot.legend(fontsize=8, loc="upper right")
 
         def on_select_span(xmin: float, xmax: float) -> None:
-            region[0] = float(min(xmin, xmax))
-            region[1] = float(max(xmin, xmax))
+            lo = float(min(xmin, xmax))
+            hi = float(max(xmin, xmax))
+            if hi <= lo:
+                return
+            regions.append((lo, hi))
+            patch = ax_plot.axvspan(lo, hi, alpha=0.20, color="tab:green")
+            region_patches.append(patch)
             status_txt.set_text(
-                f"Интервал X: [{region[0]:.6g} … {region[1]:.6g}] — "
+                f"Интервалов: {len(regions)}; последний [{lo:.6g} … {hi:.6g}] — "
                 f"нажмите «Сохранить»"
             )
             fig.canvas.draw_idle()
@@ -297,7 +305,7 @@ def main() -> None:
         title_txt.set_text(
             f"{data_root.name} — файл {idx[0] + 1} из {len(plottable)}: {path.name}\n"
             f"Мышью выделите зону по оси X → «Сохранить». Вывод: {output_hint}.{pos_hint} "
-            "Клик по линии — ряд; по полю — путь к файлу. В поле «№» — номер файла, Enter."
+            "Можно выделить несколько зон. «Очистить» — сброс. В поле «№» — номер файла, Enter."
         )
         fig.canvas.draw_idle()
         tb = num_tb_ref[0]
@@ -345,42 +353,74 @@ def main() -> None:
 
     def on_save(_event):
         path_i, df_i, x_i, _yc, _xl, _xc = plottable[idx[0]]
-        if region[0] is None or region[1] is None:
-            msg = "Сначала выделите интервал на графике (зелёная зона по X)."
+        if not regions:
+            msg = "Сначала выделите один или несколько интервалов на графике."
             status_txt.set_text(msg)
             print(msg, file=sys.stderr)
             fig.canvas.draw_idle()
             return
-        lo, hi = region[0], region[1]
-        mask = (x_i >= lo) & (x_i <= hi)
-        if not np.any(mask):
-            msg = "В выделении нет точек данных — расширьте интервал."
-            status_txt.set_text(msg)
-            print(msg, file=sys.stderr)
-            fig.canvas.draw_idle()
-            return
-        out_df = df_i[mask].copy()
+
         rel = path_i.relative_to(data_root)
-        if data_root.name == "Deformed":
-            dest = mod_root / prop_subdir[0] / rel
-        else:
-            dest = mod_root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            out_df.to_csv(dest, index=False)
-        except OSError as e:
-            msg = f"Ошибка записи: {e}"
+        saved_paths: list[Path] = []
+        skipped = 0
+        for part_i, (lo, hi) in enumerate(regions, start=1):
+            mask = (x_i >= lo) & (x_i <= hi)
+            if not np.any(mask):
+                skipped += 1
+                continue
+            out_df = df_i[mask].copy()
+            rel_parts = list(rel.parts)
+            if len(rel_parts) >= 2:
+                # simulation_.../vibration_log.csv -> simulation_..._partNN/vibration_log.csv
+                rel_parts[0] = f"{rel_parts[0]}_part{part_i:02d}"
+            else:
+                stem = rel.stem
+                suffix = rel.suffix
+                rel_parts = [f"{stem}_part{part_i:02d}{suffix}"]
+            part_rel = Path(*rel_parts)
+            if data_root.name == "Deformed":
+                dest = mod_root / prop_subdir[0] / part_rel
+            else:
+                dest = mod_root / part_rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                out_df.to_csv(dest, index=False)
+            except OSError as e:
+                msg = f"Ошибка записи: {e}"
+                status_txt.set_text(msg)
+                print(msg, file=sys.stderr)
+                fig.canvas.draw_idle()
+                return
+            saved_paths.append(dest)
+            print(f"Сохранено строк: {len(out_df)} → {dest}")
+
+        if not saved_paths:
+            msg = "Во всех выделенных интервалах нет точек данных — расширьте выделение."
             status_txt.set_text(msg)
             print(msg, file=sys.stderr)
             fig.canvas.draw_idle()
             return
-        msg = f"Сохранено строк: {len(out_df)} →\n{dest}"
+
+        msg = (
+            f"Сохранено отдельных полётов: {len(saved_paths)}"
+            + (f" (пустых интервалов: {skipped})" if skipped else "")
+            + f"\nПоследний: {saved_paths[-1]}"
+        )
         status_txt.set_text(msg)
         print(msg)
+
+    def on_clear(_event):
+        regions.clear()
+        while region_patches:
+            patch = region_patches.pop()
+            patch.remove()
+        status_txt.set_text("Выделенные интервалы очищены.")
+        fig.canvas.draw_idle()
 
     btn_prev.on_clicked(on_prev)
     btn_next.on_clicked(on_next)
     btn_save.on_clicked(on_save)
+    btn_clear.on_clicked(on_clear)
 
     def on_pick(event):
         if event.artist is None:

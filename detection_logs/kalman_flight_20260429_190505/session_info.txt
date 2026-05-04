@@ -1,0 +1,7 @@
+Started:   2026-04-29 19:05:03.700624
+Duration:  1.36 s
+Samples:   87
+Fault:     63  (72.41%)
+Normal:    24
+Avg p_fault:  0.7247
+Latency >50ms violations: 0

@@ -1,0 +1,6 @@
+Simulation started: 2026-05-04 18:20:02
+Total samples: 1645
+Duration: 16.45 seconds
+Max vibration: 1.863540 m/s²
+Min vibration: 0.455807 m/s²
+Avg vibration: 0.974673 m/s²

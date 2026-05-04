@@ -1,0 +1,11 @@
+Started:   2026-04-29 18:39:36.368462
+Duration:  6.44 s
+Predictions total: 55
+  normal       11
+  front_left   0
+  front_right  44
+  rear_left    0
+  rear_right   0
+Dominant: front_right (44 predictions)
+Latency >50ms violations: 1
+Vibration TOTAL  min=0.9861  avg=3.3493  max=5.9127
