@@ -340,8 +340,10 @@ def _ask_yn(prompt: str) -> str:
         print("Пустой ввод, попробуйте ещё раз.")
 
 
-def _ask_quality_and_position(default_hint: str | None = None) -> tuple[str, str | None] | None:
-    print("\n=== Разметка полёта (для datasets/set_04) ===")
+def _ask_quality_and_position(
+    default_hint: str | None = None, dataset_name: str = "set_04"
+) -> tuple[str, str | None] | None:
+    print(f"\n=== Разметка полёта (для datasets/{dataset_name}) ===")
     if default_hint:
         print(f"Подсказка от моделей: {default_hint}")
     while True:
@@ -368,16 +370,21 @@ def _ask_quality_and_position(default_hint: str | None = None) -> tuple[str, str
         print("Не понял.")
 
 
-def _export_to_set04(
-    base: Path, src_csv: Path, out_dir_name: str, quality: str, position: str | None,
+def _export_to_dataset(
+    base: Path,
+    src_csv: Path,
+    out_dir_name: str,
+    quality: str,
+    position: str | None,
+    dataset_subdir: str,
 ) -> Path:
-    set04 = base / "datasets" / "set_04"
+    dataset_root = base / "datasets" / dataset_subdir
     if quality == "normal":
-        target_root = set04 / "Normal_mod"
+        target_root = dataset_root / "Normal_mod"
     else:
         if not position:
             raise SystemExit("Не указана позиция деформированного винта")
-        target_root = set04 / "Deformed_mod" / position
+        target_root = dataset_root / "Deformed_mod" / position
 
     parts = out_dir_name.split("_")
     if len(parts) >= 2 and parts[-2].isdigit() and parts[-1].isdigit():
@@ -395,6 +402,12 @@ def _export_to_set04(
     dst = sim_dir / "vibration_log.csv"
     shutil.copyfile(src_csv, dst)
     return dst
+
+
+def _export_to_set04(
+    base: Path, src_csv: Path, out_dir_name: str, quality: str, position: str | None,
+) -> Path:
+    return _export_to_dataset(base, src_csv, out_dir_name, quality, position, "set_04")
 
 
 def _hint_from_logs(rf_smooth_log, tree_smooth_log, kalman_log) -> str:

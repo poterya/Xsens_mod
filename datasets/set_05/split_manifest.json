@@ -1,0 +1,841 @@
+{
+  "source": "/home/aleksey/Рабочий стол/Detection/Xsens_mod/datasets/set_03",
+  "destination": "/home/aleksey/Рабочий стол/Detection/Xsens_mod/datasets/set_05",
+  "seed": 42,
+  "ratios": {
+    "train": 0.7,
+    "val": 0.15,
+    "test": 0.15000000000000005
+  },
+  "splits": {
+    "train": [
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181901_part01",
+        "path": "train/Normal_mod/simulation_20260504_181901_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_113502",
+        "path": "train/Normal_mod/simulation_20260411_113502"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205601",
+        "path": "train/Normal_mod/simulation_20260504_205601"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181438",
+        "path": "train/Normal_mod/simulation_20260410_181438"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_112214",
+        "path": "train/Normal_mod/simulation_20260411_112214"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_113058",
+        "path": "train/Normal_mod/simulation_20260411_113058"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205650",
+        "path": "train/Normal_mod/simulation_20260504_205650"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205852",
+        "path": "train/Normal_mod/simulation_20260504_205852"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182050_part01",
+        "path": "train/Normal_mod/simulation_20260504_182050_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_112908",
+        "path": "train/Normal_mod/simulation_20260411_112908"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181156",
+        "path": "train/Normal_mod/simulation_20260410_181156"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182004_part01",
+        "path": "train/Normal_mod/simulation_20260504_182004_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182301_part01",
+        "path": "train/Normal_mod/simulation_20260504_182301_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_203955",
+        "path": "train/Normal_mod/simulation_20260504_203955"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181847_part01",
+        "path": "train/Normal_mod/simulation_20260504_181847_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205952",
+        "path": "train/Normal_mod/simulation_20260504_205952"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180337",
+        "path": "train/Normal_mod/simulation_20260410_180337"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_113228",
+        "path": "train/Normal_mod/simulation_20260411_113228"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_204157",
+        "path": "train/Normal_mod/simulation_20260504_204157"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180500",
+        "path": "train/Normal_mod/simulation_20260410_180500"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181826_part01",
+        "path": "train/Normal_mod/simulation_20260504_181826_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181315",
+        "path": "train/Normal_mod/simulation_20260410_181315"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_190759",
+        "path": "train/Normal_mod/simulation_20260504_190759"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_113349",
+        "path": "train/Normal_mod/simulation_20260411_113349"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182132_part01",
+        "path": "train/Normal_mod/simulation_20260504_182132_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_113634",
+        "path": "train/Normal_mod/simulation_20260411_113634"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_175920",
+        "path": "train/Normal_mod/simulation_20260410_175920"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_113736",
+        "path": "train/Normal_mod/simulation_20260411_113736"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205732",
+        "path": "train/Normal_mod/simulation_20260504_205732"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_112737",
+        "path": "train/Normal_mod/simulation_20260411_112737"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181927_part01",
+        "path": "train/Normal_mod/simulation_20260504_181927_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182050_part02",
+        "path": "train/Normal_mod/simulation_20260504_182050_part02"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181807_part01",
+        "path": "train/Normal_mod/simulation_20260504_181807_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181602",
+        "path": "train/Normal_mod/simulation_20260410_181602"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182152_part01",
+        "path": "train/Normal_mod/simulation_20260504_182152_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181945_part01",
+        "path": "train/Normal_mod/simulation_20260504_181945_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205500",
+        "path": "train/Normal_mod/simulation_20260504_205500"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181722",
+        "path": "train/Normal_mod/simulation_20260410_181722"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171959",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171959"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171555",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171555"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172457",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_172457"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171917",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171917"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172423",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_172423"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260504_194037",
+        "path": "train/Deformed_mod/front_left/simulation_20260504_194037"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172530",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_172530"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172514",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_172514"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171800",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171800"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172556",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_172556"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171735",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171735"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260504_195617",
+        "path": "train/Deformed_mod/front_left/simulation_20260504_195617"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260504_193944",
+        "path": "train/Deformed_mod/front_left/simulation_20260504_193944"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171713",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171713"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172441",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_172441"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260504_194138",
+        "path": "train/Deformed_mod/front_left/simulation_20260504_194138"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171937",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171937"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171857",
+        "path": "train/Deformed_mod/front_left/simulation_20260429_171857"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_200935",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_200935"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162603",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162603"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_203614",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_203614"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_190014",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_190014"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_161933",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_161933"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162412",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162412"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162235",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162235"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_161955",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_161955"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162638",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162638"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162022",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162022"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162116",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162116"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_195855",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_195855"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_192341",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_192341"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_161827",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_161827"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162507",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162507"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162724",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162724"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_161909",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_161909"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162300",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162300"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_200709",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_200709"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_202714",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_202714"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_203442",
+        "path": "train/Deformed_mod/front_right/simulation_20260504_203442"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162212",
+        "path": "train/Deformed_mod/front_right/simulation_20260429_162212"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160231",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160231"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160558",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160558"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160427",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160427"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155323",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155323"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160255",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160255"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260504_193245",
+        "path": "train/Deformed_mod/rear_left/simulation_20260504_193245"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155256",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155256"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160523",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160523"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160443",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160443"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155344",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155344"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155405",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155405"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155443",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155443"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155505",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155505"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155613",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_155613"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260504_193056",
+        "path": "train/Deformed_mod/rear_left/simulation_20260504_193056"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160338",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160338"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260504_193150",
+        "path": "train/Deformed_mod/rear_left/simulation_20260504_193150"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160501",
+        "path": "train/Deformed_mod/rear_left/simulation_20260429_160501"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151222",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151222"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151203",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151203"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151300",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151300"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151520",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151520"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151025",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151025"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260504_191029",
+        "path": "train/Deformed_mod/rear_right/simulation_20260504_191029"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151742",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151742"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151140",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151140"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151106",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151106"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151720",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151720"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_150925",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_150925"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151452",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151452"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_150805",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_150805"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260504_191256",
+        "path": "train/Deformed_mod/rear_right/simulation_20260504_191256"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151630",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151630"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151242",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151242"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151645",
+        "path": "train/Deformed_mod/rear_right/simulation_20260429_151645"
+      }
+    ],
+    "val": [
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_204105",
+        "path": "val/Normal_mod/simulation_20260504_204105"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_205814",
+        "path": "val/Normal_mod/simulation_20260504_205814"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180215",
+        "path": "val/Normal_mod/simulation_20260410_180215"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_181807_part02",
+        "path": "val/Normal_mod/simulation_20260504_181807_part02"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182113_part01",
+        "path": "val/Normal_mod/simulation_20260504_182113_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180623",
+        "path": "val/Normal_mod/simulation_20260410_180623"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182023_part01",
+        "path": "val/Normal_mod/simulation_20260504_182023_part01"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_190855",
+        "path": "val/Normal_mod/simulation_20260504_190855"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171622",
+        "path": "val/Deformed_mod/front_left/simulation_20260429_171622"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171647",
+        "path": "val/Deformed_mod/front_left/simulation_20260429_171647"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_171836",
+        "path": "val/Deformed_mod/front_left/simulation_20260429_171836"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172612",
+        "path": "val/Deformed_mod/front_left/simulation_20260429_172612"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162443",
+        "path": "val/Deformed_mod/front_right/simulation_20260429_162443"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162537",
+        "path": "val/Deformed_mod/front_right/simulation_20260429_162537"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_202836",
+        "path": "val/Deformed_mod/front_right/simulation_20260504_202836"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162148",
+        "path": "val/Deformed_mod/front_right/simulation_20260429_162148"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260504_192430",
+        "path": "val/Deformed_mod/front_right/simulation_20260504_192430"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155523",
+        "path": "val/Deformed_mod/rear_left/simulation_20260429_155523"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260504_193011",
+        "path": "val/Deformed_mod/rear_left/simulation_20260504_193011"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155552",
+        "path": "val/Deformed_mod/rear_left/simulation_20260429_155552"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_155423",
+        "path": "val/Deformed_mod/rear_left/simulation_20260429_155423"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151610",
+        "path": "val/Deformed_mod/rear_right/simulation_20260429_151610"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260504_191404",
+        "path": "val/Deformed_mod/rear_right/simulation_20260504_191404"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151536",
+        "path": "val/Deformed_mod/rear_right/simulation_20260429_151536"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_150959",
+        "path": "val/Deformed_mod/rear_right/simulation_20260429_150959"
+      }
+    ],
+    "test": [
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180747",
+        "path": "test/Normal_mod/simulation_20260410_180747"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181033",
+        "path": "test/Normal_mod/simulation_20260410_181033"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_181924",
+        "path": "test/Normal_mod/simulation_20260410_181924"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_182021",
+        "path": "test/Normal_mod/simulation_20260410_182021"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260411_112449",
+        "path": "test/Normal_mod/simulation_20260411_112449"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_204308",
+        "path": "test/Normal_mod/simulation_20260504_204308"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180059",
+        "path": "test/Normal_mod/simulation_20260410_180059"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260410_180922",
+        "path": "test/Normal_mod/simulation_20260410_180922"
+      },
+      {
+        "label": "normal",
+        "source": "Normal_mod/simulation_20260504_182152_part02",
+        "path": "test/Normal_mod/simulation_20260504_182152_part02"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172406",
+        "path": "test/Deformed_mod/front_left/simulation_20260429_172406"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172632",
+        "path": "test/Deformed_mod/front_left/simulation_20260429_172632"
+      },
+      {
+        "label": "front_left",
+        "source": "Deformed_mod/front_left/simulation_20260429_172650",
+        "path": "test/Deformed_mod/front_left/simulation_20260429_172650"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162659",
+        "path": "test/Deformed_mod/front_right/simulation_20260429_162659"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162048",
+        "path": "test/Deformed_mod/front_right/simulation_20260429_162048"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162813",
+        "path": "test/Deformed_mod/front_right/simulation_20260429_162813"
+      },
+      {
+        "label": "front_right",
+        "source": "Deformed_mod/front_right/simulation_20260429_162749",
+        "path": "test/Deformed_mod/front_right/simulation_20260429_162749"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160402",
+        "path": "test/Deformed_mod/rear_left/simulation_20260429_160402"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260504_192636",
+        "path": "test/Deformed_mod/rear_left/simulation_20260504_192636"
+      },
+      {
+        "label": "rear_left",
+        "source": "Deformed_mod/rear_left/simulation_20260429_160315",
+        "path": "test/Deformed_mod/rear_left/simulation_20260429_160315"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151810",
+        "path": "test/Deformed_mod/rear_right/simulation_20260429_151810"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260429_151550",
+        "path": "test/Deformed_mod/rear_right/simulation_20260429_151550"
+      },
+      {
+        "label": "rear_right",
+        "source": "Deformed_mod/rear_right/simulation_20260504_191154",
+        "path": "test/Deformed_mod/rear_right/simulation_20260504_191154"
+      }
+    ]
+  },
+  "counts": {
+    "train": {
+      "normal": 38,
+      "front_left": 18,
+      "front_right": 22,
+      "rear_left": 18,
+      "rear_right": 17
+    },
+    "val": {
+      "normal": 8,
+      "front_left": 4,
+      "front_right": 5,
+      "rear_left": 4,
+      "rear_right": 4
+    },
+    "test": {
+      "normal": 9,
+      "front_left": 3,
+      "front_right": 4,
+      "rear_left": 3,
+      "rear_right": 3
+    }
+  }
+}
