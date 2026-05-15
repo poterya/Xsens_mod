@@ -18,18 +18,48 @@ here.
   EKF velocity estimate stays below `|vxy| <= 0.30 m/s` and
   `|vz| <= 0.30 m/s` continuously for 3 seconds. Disarm / landing
   returns to waiting and flushes the buffer.
-* In `Detecting` state a rolling window of 50 body-frame accelerometer
-  samples is fed into a de-meaned RMS vibration metric, which is then
-  forwarded to `vibration_fault()` — the integration hook for the
-  sklearn-trained RandomForest / DecisionTree model. The MVP commits a
-  simple RMS threshold so the pipeline is testable end-to-end.
+* In `Detecting` state, the per-axis vibration RMS from
+  `AP_InertialSensor::get_vibration_levels()` (identical to the MAVLink
+  `VIBRATION` message and the `VIBE` log) is pushed into a 50-deep
+  ring buffer. Once the ring is full, the 73-D feature vector is
+  extracted (`nn_detect_features.cpp`) and fed to the exported
+  RandomForest model (`nn_detect_model.{h,cpp}` — 200 trees,
+  `max_depth=12`). The class-1 probability is EMA-smoothed and
+  compared against `NN_DEFORMED_THRESHOLD = 0.35`.
 * MAVLink `STATUSTEXT` reports once a second:
-  * `NN_DETECT: engaged, take off and hover to start detection`
+  * `NN_DETECT: engaged, …`
   * `NN_DETECT: waiting hover vxy=… vz=…`
   * `NN_DETECT: hover stable, detection started`
-  * `NN_DETECT: ok vib=…` / `NN_DETECT: BROKEN vib=…`
+  * `NN_DETECT: filling window (k/50)`
+  * `NN_DETECT: ok p=… vx=… vy=… vz=… clip=…`
+  * `NN_DETECT: BROKEN p=… vx=… vy=… vz=… clip=…`
   * `NN_DETECT: propeller fault detected` (one-shot CRITICAL on first
     transition)
+
+## SITL CSV replay
+
+For end-to-end testing without a real vibration source, set the
+`NN_DETECT_CSV` environment variable before launching `arducopter`
+(SITL builds only). The file must be in the format produced by
+`methods/main.py VibrationAnalyzer.save_log`:
+
+```
+time_seconds,total_vibration,rms_x,rms_y,rms_z
+15.925,0.831173,0.325665,0.571104,0.508558
+...
+```
+
+When CSV replay is active the detector skips the hover-stability gate
+and starts inferring immediately after `mode NNDT`. Use
+`NN_DETECT_CSV_LOOP=1` to loop the file. The IMU branch is unchanged;
+on real flight controllers the file is never opened.
+
+Verified end-to-end with samples from the `methods` branch:
+
+| CSV | Result |
+|-----|--------|
+| `Normal_mod/.../vibration_log.csv` | mostly `ok`, `p ~= 0.02` |
+| `Deformed_mod/.../vibration_log.csv` | `BROKEN`, `p = 1.00` |
 
 ## Mode identity
 
@@ -51,14 +81,18 @@ arducopter_nn_detect/
 ├── README.md                          this file
 ├── INSTALL.md                         step-by-step build & SITL test
 ├── patches/
-│   └── 0001-add-nn-detect-mode.patch  unified patch (apply with `git am`)
+│   └── nn_detect.patch                unified patch (two commits, apply with `git am`)
 └── files/
     └── ArduCopter/
         ├── Copter.h                   reference copy of modified files
         ├── config.h
         ├── mode.cpp
         ├── mode.h
-        └── mode_nn_detect.cpp         the new implementation
+        ├── mode_nn_detect.cpp         the new implementation
+        ├── nn_detect_features.h       73-feature extractor (declarations)
+        ├── nn_detect_features.cpp     73-feature extractor (impl)
+        ├── nn_detect_model.h          exported RF model (declarations)
+        └── nn_detect_model.cpp        exported RF model data (~2.9 MB)
 ```
 
 The patch is the source of truth. The flat copies under `files/` are
@@ -68,58 +102,24 @@ provided so that the changes can be inspected without applying anything.
 
 Generated from the local ArduPilot tree at:
 
-* commit `ArduCopter V4.8.0-dev` (`1b34668cc0`)
-* branch `master` (upstream), patch lives on a feature branch `nn_detect`
+* upstream base `ArduCopter V4.8.0-dev` (`1b34668cc0`)
+* feature branch `nn_detect` (two commits — the mode skeleton + the RF
+  inference / CSV replay integration)
 
-The patch is small and self-contained (5 files, ~335 insertions), so it
-applies cleanly on any recent ArduPilot master that still has:
+The patch applies cleanly on any recent ArduPilot master that still has:
 
 * `class Mode` in `ArduCopter/mode.h`
 * `Copter::mode_from_mode_num()` in `ArduCopter/mode.cpp`
 * the `MODE_*_ENABLED` macro convention in `ArduCopter/config.h`
 * `loiter_nav`, `pos_control`, `attitude_control` accessible from `Mode`
+* `AP_InertialSensor::get_vibration_levels()` /
+  `get_accel_clip_count()` /
+  `get_first_usable_accel()` accessors
 
 If upstream API has shifted (e.g. renamed `pos_control->D_*` methods),
 fix-ups will be required — see `INSTALL.md` for guidance.
 
 ## Quick test in SITL
 
-In one terminal:
-
-```bash
-mkdir -p /tmp/sitl_nndt && cd /tmp/sitl_nndt
-~/ardupilot/build/sitl/bin/arducopter --model + --speedup 1 --slave 0 \
-    --defaults ~/ardupilot/Tools/autotest/default_params/copter.parm \
-    --sim-address=127.0.0.1 -I0
-```
-
-In another:
-
-```bash
-mavproxy.py --master tcp:127.0.0.1:5760 --console --map
-```
-
-Once `EKF3 IMU0 is using GPS` appears, in the MAVProxy prompt:
-
-```
-mode GUIDED
-arm throttle
-takeoff 5
-# wait for ~5 m altitude in the HUD
-mode NNDT      # equivalent: mode 29
-```
-
-You should see the STATUSTEXT sequence listed above, ending with
-periodic `NN_DETECT: ok vib=…` lines.
-
-## Integration roadmap
-
-1. Replace `vibration_fault()` body with auto-generated C++ inference of
-   the sklearn model exported from `train_detector.py` /
-   `train_rf_detector.py`. Target header:
-   `ArduCopter/nn_detect_model.h`.
-2. Synchronise the feature definition between the C++ side and the
-   Python side: the Python `realtime_detector` currently uses a
-   `window_size=20` RMS; the C++ side uses `NN_WINDOW=50`. Pick one.
-3. (optional) Send `NAMED_VALUE_FLOAT` telemetry (`vib`, `nn_fault`) in
-   addition to `STATUSTEXT`, so a GCS can plot the metric live.
+See [`INSTALL.md`](INSTALL.md) for the full procedure (both the live
+IMU path and the CSV replay path).

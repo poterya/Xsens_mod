@@ -5,45 +5,94 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 
+#include "nn_detect_model.h"
+#include "nn_detect_features.h"
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+  #include <cstdio>
+  #include <cstdlib>
+  #include <cstring>
+#endif
+
 /*
  * NN_DETECT flight mode.
  *
- * Behaviour:
- *   - Holds horizontal position (like Loiter) and altitude (Alt-Hold style)
- *     so the airframe stays put while the analyser runs.
- *   - State machine for the detector itself:
- *       WaitingForHover -> Detecting
- *     The detector engages ONLY when the copter is armed, in the air and the
- *     EKF velocity estimate stays below NN_HOVER_VXY_THRESHOLD (horizontal)
- *     and NN_HOVER_VZ_THRESHOLD (vertical) continuously for
- *     NN_HOVER_STABLE_MS. Disarm / landing returns to WaitingForHover and
- *     flushes the rolling buffer.
- *   - In Detecting state every iteration samples body-frame accelerometer
- *     into a circular buffer of NN_WINDOW samples, computes the de-meaned
- *     RMS of each axis, combines them into a total vibration metric and
- *     calls vibration_fault() which is the integration hook for the trained
- *     RandomForest / DecisionTree model.
- *   - Status is reported via STATUSTEXT at NN_REPORT_INTERVAL_MS cadence,
- *     and a CRITICAL message is latched on the first fault transition.
+ * Behaviour
+ * ---------
+ * Holds horizontal position (Loiter-style) and altitude (Alt-Hold style)
+ * with the loiter target frozen at the spot captured in init(). All pilot
+ * stick input is deliberately ignored so the airframe stays still for the
+ * vibration analyser. Exit by switching mode from the GCS.
  *
- * Inference hook:
- *   vibration_fault() currently implements a simple RMS threshold so the
- *   pipeline is fully testable end-to-end in SITL. The intent is to replace
- *   the body of this function with the auto-generated C++ inference of the
- *   sklearn model (see methods/export_model_to_cpp.py — to be added).
+ * Detector state machine
+ * ----------------------
+ * WaitingForHover -> Detecting
+ *   - WaitingForHover: armed + in-air + EKF |vxy| <= NN_HOVER_VXY_THRESHOLD
+ *     and |vz| <= NN_HOVER_VZ_THRESHOLD held continuously for
+ *     NN_HOVER_STABLE_MS. Progress STATUSTEXT once a second.
+ *   - Detecting: every NN_VIBE_SAMPLE_PERIOD_MS the current per-axis
+ *     vibration levels are pushed into a 50-deep ring; once the ring is
+ *     full the 73-D feature vector is extracted and fed to the exported
+ *     RandomForest model (NNDetectModel::predict_proba). The probability
+ *     of class "DEFORMED" is EMA-smoothed and thresholded.
+ * Disarm / landing returns to WaitingForHover and clears all state.
+ *
+ * Data source
+ * -----------
+ * AP_InertialSensor::get_vibration_levels() — built-in HP-filtered per-axis
+ * RMS, identical to the value reported by the MAVLink VIBRATION message
+ * and the VIBE log. total_vibration is sqrt(vx^2 + vy^2 + vz^2), matching
+ * the Python pipeline (methods/main.py VibrationAnalyzer.get_vibration_rms).
+ * get_accel_clip_count() is also watched; any new clip during detection is
+ * surfaced as an OR-into-fault signal alongside the RF probability.
+ *
+ * SITL CSV replay
+ * ---------------
+ * In a SITL build the mode looks at the NN_DETECT_CSV environment variable.
+ * If it points to a CSV with the header
+ *   time_seconds,total_vibration,rms_x,rms_y,rms_z
+ * (the exact format written by methods/main.py VibrationAnalyzer.save_log)
+ * the detector pulls samples from the file instead of the IMU, skips the
+ * hover-stability gate and starts inferring immediately after init(). Set
+ * NN_DETECT_CSV_LOOP=1 to loop the file (useful for long-haul checks); by
+ * default the detector holds the last sample once the file is exhausted.
+ *
+ * Inference
+ * ---------
+ * RandomForest with 200 trees, max_depth=12, trained by
+ * methods/train_rf_detector.py on Normal_mod / Deformed_mod sessions. The
+ * model is exported to a flat C++ table by methods/export_rf_to_cpp.py
+ * (see nn_detect_model.{h,cpp}). The feature extractor in
+ * nn_detect_features.cpp mirrors numpy / pandas exactly so the C++ and
+ * Python inferences agree on identical input windows.
  */
 
-// RMS vibration value (m/s^2) above which a propeller fault is flagged.
-// MVP heuristic, will be replaced by exported sklearn model inference.
-static constexpr float NN_VIB_THRESHOLD = 0.6f;
+// ----- Detector parameters -----
 
-// STATUSTEXT cadence
+// Detection trips when EMA-smoothed P(DEFORMED) crosses this threshold.
+// Same default as methods/realtime_rf_detector.py DEFAULT_DEFORMED_THRESHOLD.
+static constexpr float NN_DEFORMED_THRESHOLD = 0.35f;
+
+// EMA smoothing factor for the probability stream.
+static constexpr float NN_PROBA_EMA_ALPHA = 0.25f;
+
+// EMA smoothing factor for the raw vibration display values (STATUSTEXT only).
+static constexpr float NN_VIBE_EMA_ALPHA = 0.15f;
+
+// Vibration sample cadence into the ring (matches the 100 Hz training rate).
+static constexpr uint32_t NN_VIBE_SAMPLE_PERIOD_MS = 10;
+
+// STATUSTEXT cadence.
 static constexpr uint32_t NN_REPORT_INTERVAL_MS = 1000;
 
-// hover stability gating
+// Hover stability gating.
 static constexpr float    NN_HOVER_VXY_THRESHOLD = 0.30f;  // m/s
 static constexpr float    NN_HOVER_VZ_THRESHOLD  = 0.30f;  // m/s
 static constexpr uint32_t NN_HOVER_STABLE_MS     = 3000;   // continuous time required
+
+static_assert(NNDetectFeatures::WINDOW_SIZE == 50, "ring size assumed 50");
+static_assert(NNDetectModel::FEATURE_COUNT  == NNDetectFeatures::FEATURE_COUNT,
+              "model and extractor feature counts disagree");
 
 
 bool ModeNNDetect::init(bool ignore_checks)
@@ -65,30 +114,41 @@ bool ModeNNDetect::init(bool ignore_checks)
                                                 get_pilot_speed_up_ms(),
                                                 get_pilot_accel_D_mss());
 
-    reset_buffer();
-    _state = DetectState::WaitingForHover;
+    csv_replay_open();
+
+    reset_detection();
     _hover_stable_since_ms = 0;
     _fault_detected = false;
     _last_report_ms = 0;
 
-    gcs().send_text(MAV_SEVERITY_INFO,
-                    "NN_DETECT: engaged, take off and hover to start detection");
+    if (_csv_replay_active) {
+        // CSV replay: data is fed from disk, the airframe state is irrelevant.
+        _state = DetectState::Detecting;
+        gcs().send_text(MAV_SEVERITY_INFO,
+                        "NN_DETECT: engaged, replaying vibration CSV%s",
+                        _csv_replay_loop ? " (loop)" : "");
+    } else {
+        _state = DetectState::WaitingForHover;
+        gcs().send_text(MAV_SEVERITY_INFO,
+                        "NN_DETECT: engaged, take off and hover to start detection");
+    }
     return true;
+}
+
+void ModeNNDetect::exit()
+{
+    csv_replay_close();
 }
 
 void ModeNNDetect::run()
 {
     // -------- 1) Standard hover control (Loiter-style, but RC is ignored) --------
-    // Targets are hard-coded to zero (no climb, no yaw, no lean from stick).
     const float target_yaw_rate_rads = 0.0f;
     float target_climb_rate_ms = 0.0f;
 
     pos_control->D_set_max_speed_accel_m(get_pilot_speed_dn_ms(),
                                          get_pilot_speed_up_ms(),
                                          get_pilot_accel_D_mss());
-
-    // Explicitly clear any latent pilot acceleration request so the position
-    // target stays locked to the spot we captured in init().
     loiter_nav->clear_pilot_desired_acceleration();
 
     if (copter.ap.land_complete_maybe) {
@@ -137,64 +197,112 @@ void ModeNNDetect::run()
     // -------- 2) Detector state machine --------
     const uint32_t now_ms = AP_HAL::millis();
 
-    // Disarm or landing always drops us back to waiting and flushes the buffer.
-    if (!motors->armed() || copter.ap.land_complete) {
+    // Disarm or landing always drops us back to waiting and flushes state —
+    // except when we are replaying a CSV: there the data source has nothing
+    // to do with the airframe state, so the detector runs unconditionally.
+    if (!_csv_replay_active && (!motors->armed() || copter.ap.land_complete)) {
         if (_state == DetectState::Detecting) {
             gcs().send_text(MAV_SEVERITY_INFO,
                             "NN_DETECT: landed/disarmed, detector paused");
         }
         _state = DetectState::WaitingForHover;
         _hover_stable_since_ms = 0;
-        reset_buffer();
+        reset_detection();
         return;
     }
 
-    float vxy = 0.0f, vz = 0.0f;
-    const bool hover_now = is_hover_stable(vxy, vz);
+    if (!_csv_replay_active) {
+        float vxy = 0.0f, vz = 0.0f;
+        const bool hover_now = is_hover_stable(vxy, vz);
 
-    if (_state == DetectState::WaitingForHover) {
-        if (hover_now) {
-            if (_hover_stable_since_ms == 0) {
-                _hover_stable_since_ms = now_ms;
-            } else if (now_ms - _hover_stable_since_ms >= NN_HOVER_STABLE_MS) {
-                _state = DetectState::Detecting;
-                _fault_detected = false;
-                _last_report_ms = now_ms;
-                reset_buffer();
-                gcs().send_text(MAV_SEVERITY_INFO,
-                                "NN_DETECT: hover stable, detection started");
+        if (_state == DetectState::WaitingForHover) {
+            if (hover_now) {
+                if (_hover_stable_since_ms == 0) {
+                    _hover_stable_since_ms = now_ms;
+                } else if (now_ms - _hover_stable_since_ms >= NN_HOVER_STABLE_MS) {
+                    _state = DetectState::Detecting;
+                    _fault_detected = false;
+                    _last_report_ms = now_ms;
+                    reset_detection();
+                    gcs().send_text(MAV_SEVERITY_INFO,
+                                    "NN_DETECT: hover stable, detection started");
+                }
+            } else {
+                _hover_stable_since_ms = 0;
             }
+
+            if (now_ms - _last_report_ms >= NN_REPORT_INTERVAL_MS) {
+                _last_report_ms = now_ms;
+                gcs().send_text(MAV_SEVERITY_INFO,
+                                "NN_DETECT: waiting hover vxy=%.2f vz=%.2f",
+                                (double)vxy, (double)vz);
+            }
+            return;
+        }
+    }
+
+    // _state == DetectState::Detecting -------------------------------------
+
+    // Push a fresh vibration sample at NN_VIBE_SAMPLE_PERIOD_MS cadence.
+    // Source: CSV when replay is active, otherwise the IMU vibration monitor.
+    if (now_ms - _last_sample_ms >= NN_VIBE_SAMPLE_PERIOD_MS) {
+        _last_sample_ms = now_ms;
+        Vector3f vibe;
+        bool have_sample = false;
+        if (_csv_replay_active) {
+            have_sample = csv_replay_next(vibe);
         } else {
-            _hover_stable_since_ms = 0;
+            vibe = copter.ins.get_vibration_levels();
+            have_sample = true;
         }
-
-        // periodic progress message so the operator sees what is happening
-        if (now_ms - _last_report_ms >= NN_REPORT_INTERVAL_MS) {
-            _last_report_ms = now_ms;
-            gcs().send_text(MAV_SEVERITY_INFO,
-                            "NN_DETECT: waiting hover vxy=%.2f vz=%.2f",
-                            (double)vxy, (double)vz);
+        if (have_sample) {
+            // Keep the EMA display value in sync with what is actually being
+            // fed to the model (CSV value in replay, IMU value otherwise).
+            if (!_vibe_ema_initialised) {
+                _vibe_ema = vibe;
+                _vibe_ema_initialised = true;
+            } else {
+                const float a = NN_VIBE_EMA_ALPHA;
+                _vibe_ema.x = a * vibe.x + (1.0f - a) * _vibe_ema.x;
+                _vibe_ema.y = a * vibe.y + (1.0f - a) * _vibe_ema.y;
+                _vibe_ema.z = a * vibe.z + (1.0f - a) * _vibe_ema.z;
+            }
+            push_vibration_sample(vibe);
         }
-        return;
     }
 
-    // _state == DetectState::Detecting
-    update_vibration_window();
-    if (_samples_filled < NN_WINDOW) {
-        return;
+    float p_deformed = 0.0f;
+    const bool inference_ready = run_inference(p_deformed);
+
+    uint32_t new_clips = 0;
+    if (!_csv_replay_active) {
+        const uint8_t imu_idx = copter.ins.get_first_usable_accel();
+        const uint32_t current_clips = copter.ins.get_accel_clip_count(imu_idx);
+        new_clips = (current_clips > _clip_count_baseline)
+                        ? (current_clips - _clip_count_baseline)
+                        : 0;
     }
 
-    const float vib_total = compute_vibration_rms();
-    const bool current_fault = vibration_fault(vib_total);
+    const bool current_fault =
+        inference_ready ? vibration_fault(_p_deformed_ema, new_clips) : false;
 
     if (now_ms - _last_report_ms >= NN_REPORT_INTERVAL_MS) {
         _last_report_ms = now_ms;
-        if (current_fault) {
-            gcs().send_text(MAV_SEVERITY_WARNING,
-                            "NN_DETECT: BROKEN vib=%.3f", (double)vib_total);
-        } else {
+        if (!inference_ready) {
             gcs().send_text(MAV_SEVERITY_INFO,
-                            "NN_DETECT: ok vib=%.3f", (double)vib_total);
+                            "NN_DETECT: filling window (%u/%u)",
+                            (unsigned)_ring_filled, (unsigned)NN_RING);
+        } else {
+            const MAV_SEVERITY sev = current_fault ? MAV_SEVERITY_WARNING
+                                                   : MAV_SEVERITY_INFO;
+            gcs().send_text(sev,
+                            "NN_DETECT: %s p=%.2f vx=%.1f vy=%.1f vz=%.1f clip=%u",
+                            current_fault ? "BROKEN" : "ok",
+                            (double)_p_deformed_ema,
+                            (double)_vibe_ema.x,
+                            (double)_vibe_ema.y,
+                            (double)_vibe_ema.z,
+                            (unsigned)new_clips);
         }
     }
 
@@ -214,56 +322,207 @@ bool ModeNNDetect::is_hover_stable(float &out_vxy, float &out_vz) const
            (out_vz  <= NN_HOVER_VZ_THRESHOLD);
 }
 
-void ModeNNDetect::reset_buffer()
+void ModeNNDetect::reset_detection()
 {
-    _window_index = 0;
-    _samples_filled = 0;
+    _ring_index = 0;
+    _ring_filled = 0;
+    _vibe_ema.zero();
+    _vibe_ema_initialised = false;
+    _p_deformed_ema = 0.0f;
+    _p_ema_initialised = false;
+    _last_sample_ms = 0;
+    const uint8_t imu_idx = copter.ins.get_first_usable_accel();
+    _clip_count_baseline = copter.ins.get_accel_clip_count(imu_idx);
 }
 
-void ModeNNDetect::update_vibration_window()
+void ModeNNDetect::push_vibration_sample(const Vector3f &v)
 {
-    const Vector3f &accel = copter.ins.get_accel();
-    _acc_x[_window_index] = accel.x;
-    _acc_y[_window_index] = accel.y;
-    _acc_z[_window_index] = accel.z;
-    _window_index = (_window_index + 1) % NN_WINDOW;
-    if (_samples_filled < NN_WINDOW) {
-        _samples_filled++;
+    const float total = v.length();
+    _ring_total[_ring_index] = total;
+    _ring_x[_ring_index] = v.x;
+    _ring_y[_ring_index] = v.y;
+    _ring_z[_ring_index] = v.z;
+    _ring_index = (_ring_index + 1) % NN_RING;
+    if (_ring_filled < NN_RING) {
+        _ring_filled++;
     }
 }
 
-float ModeNNDetect::compute_vibration_rms() const
+bool ModeNNDetect::run_inference(float &out_p_deformed)
 {
-    float mean_x = 0.0f, mean_y = 0.0f, mean_z = 0.0f;
-    for (uint16_t i = 0; i < NN_WINDOW; i++) {
-        mean_x += _acc_x[i];
-        mean_y += _acc_y[i];
-        mean_z += _acc_z[i];
+    if (_ring_filled < NN_RING) {
+        return false;
     }
-    mean_x /= NN_WINDOW;
-    mean_y /= NN_WINDOW;
-    mean_z /= NN_WINDOW;
 
-    float sx = 0.0f, sy = 0.0f, sz = 0.0f;
-    for (uint16_t i = 0; i < NN_WINDOW; i++) {
-        const float dx = _acc_x[i] - mean_x;
-        const float dy = _acc_y[i] - mean_y;
-        const float dz = _acc_z[i] - mean_z;
-        sx += dx * dx;
-        sy += dy * dy;
-        sz += dz * dz;
+    // Pack the ring into a linear window in chronological order.
+    float total_lin[NN_RING], x_lin[NN_RING], y_lin[NN_RING], z_lin[NN_RING];
+    for (uint16_t i = 0; i < NN_RING; i++) {
+        const uint16_t src = (_ring_index + i) % NN_RING;
+        total_lin[i] = _ring_total[src];
+        x_lin[i]     = _ring_x[src];
+        y_lin[i]     = _ring_y[src];
+        z_lin[i]     = _ring_z[src];
     }
-    const float rms_x = sqrtf(sx / NN_WINDOW);
-    const float rms_y = sqrtf(sy / NN_WINDOW);
-    const float rms_z = sqrtf(sz / NN_WINDOW);
-    return sqrtf(rms_x * rms_x + rms_y * rms_y + rms_z * rms_z);
+
+    float features[NNDetectModel::FEATURE_COUNT];
+    NNDetectFeatures::extract(total_lin, x_lin, y_lin, z_lin, features);
+
+    const float p = NNDetectModel::predict_proba(features);
+    out_p_deformed = p;
+
+    if (!_p_ema_initialised) {
+        _p_deformed_ema = p;
+        _p_ema_initialised = true;
+    } else {
+        const float a = NN_PROBA_EMA_ALPHA;
+        _p_deformed_ema = a * p + (1.0f - a) * _p_deformed_ema;
+    }
+    return true;
 }
 
-bool ModeNNDetect::vibration_fault(float vib_total) const
+bool ModeNNDetect::vibration_fault(float p_deformed_ema, uint32_t new_clips) const
 {
-    // Replace this body with auto-generated sklearn inference once the model
-    // is exported (see methods/export_model_to_cpp.py).
-    return vib_total >= NN_VIB_THRESHOLD;
+    if (new_clips > 0) {
+        return true;  // any accelerometer clip during detection is suspicious
+    }
+    return p_deformed_ema >= NN_DEFORMED_THRESHOLD;
+}
+
+// -----------------------------------------------------------------------------
+// CSV replay (SITL only). Reads the file written by
+// methods/main.py VibrationAnalyzer.save_log:
+//   time_seconds,total_vibration,rms_x,rms_y,rms_z
+// We ignore time_seconds (cadence is driven by NN_VIBE_SAMPLE_PERIOD_MS) and
+// total_vibration (recomputed from rms_x/y/z to stay consistent with the
+// in-flight code path).
+// -----------------------------------------------------------------------------
+
+void ModeNNDetect::csv_replay_open()
+{
+    _csv_fp = nullptr;
+    _csv_replay_active = false;
+    _csv_replay_loop = false;
+    _csv_exhausted_reported = false;
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    const char *path = getenv("NN_DETECT_CSV");
+    if (path == nullptr || path[0] == '\0') {
+        return;
+    }
+    FILE *fp = fopen(path, "r");
+    if (fp == nullptr) {
+        gcs().send_text(MAV_SEVERITY_WARNING,
+                        "NN_DETECT: CSV open failed: %s", path);
+        return;
+    }
+    // Skip header line if present (we expect one).
+    char header[256];
+    if (fgets(header, sizeof(header), fp) == nullptr) {
+        fclose(fp);
+        gcs().send_text(MAV_SEVERITY_WARNING,
+                        "NN_DETECT: CSV empty: %s", path);
+        return;
+    }
+    // If the "header" actually looks like data (no alpha characters) rewind.
+    bool has_alpha = false;
+    for (const char *p = header; *p; p++) {
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
+            has_alpha = true;
+            break;
+        }
+    }
+    if (!has_alpha) {
+        rewind(fp);
+    }
+
+    _csv_fp = fp;
+    _csv_replay_active = true;
+    const char *loop_env = getenv("NN_DETECT_CSV_LOOP");
+    _csv_replay_loop = (loop_env != nullptr && loop_env[0] != '\0' &&
+                       loop_env[0] != '0');
+    gcs().send_text(MAV_SEVERITY_INFO,
+                    "NN_DETECT: CSV replay %s", path);
+#endif
+}
+
+void ModeNNDetect::csv_replay_close()
+{
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    if (_csv_fp != nullptr) {
+        fclose((FILE *)_csv_fp);
+    }
+#endif
+    _csv_fp = nullptr;
+    _csv_replay_active = false;
+    _csv_replay_loop = false;
+    _csv_exhausted_reported = false;
+}
+
+void ModeNNDetect::csv_replay_rewind()
+{
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    if (_csv_fp == nullptr) {
+        return;
+    }
+    rewind((FILE *)_csv_fp);
+    // Re-skip the header (always exists when we opened the file).
+    char header[256];
+    if (fgets(header, sizeof(header), (FILE *)_csv_fp) == nullptr) {
+        // unexpected: file became empty after rewind — leave fp at EOF
+    }
+#endif
+    _csv_exhausted_reported = false;
+}
+
+bool ModeNNDetect::csv_replay_next(Vector3f &out_vibe)
+{
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    if (_csv_fp == nullptr) {
+        return false;
+    }
+    char line[256];
+    while (true) {
+        if (fgets(line, sizeof(line), (FILE *)_csv_fp) == nullptr) {
+            // EOF.
+            if (_csv_replay_loop) {
+                csv_replay_rewind();
+                continue;
+            }
+            if (!_csv_exhausted_reported) {
+                _csv_exhausted_reported = true;
+                gcs().send_text(MAV_SEVERITY_INFO,
+                                "NN_DETECT: CSV exhausted, holding last sample");
+            }
+            return false;
+        }
+        // Skip empty lines.
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\n' || *p == '\r' || *p == '\0' || *p == '#') {
+            continue;
+        }
+        float t = 0.0f, total = 0.0f, rx = 0.0f, ry = 0.0f, rz = 0.0f;
+        const int n = sscanf(line, "%f,%f,%f,%f,%f",
+                             &t, &total, &rx, &ry, &rz);
+        if (n >= 5) {
+            out_vibe.x = rx;
+            out_vibe.y = ry;
+            out_vibe.z = rz;
+            return true;
+        }
+        // 3-column variant: rms_x,rms_y,rms_z
+        if (sscanf(line, "%f,%f,%f", &rx, &ry, &rz) == 3) {
+            out_vibe.x = rx;
+            out_vibe.y = ry;
+            out_vibe.z = rz;
+            return true;
+        }
+        // unparseable line — skip and keep going
+    }
+#else
+    (void)out_vibe;
+    return false;
+#endif
 }
 
 #endif  // MODE_NN_DETECT_ENABLED

@@ -2164,6 +2164,7 @@ public:
 
     bool init(bool ignore_checks) override;
     void run() override;
+    void exit() override;
 
     bool requires_position() const override { return true; }
     bool has_manual_throttle() const override { return false; }
@@ -2178,28 +2179,58 @@ protected:
 
 private:
 
-    // rolling-window vibration analysis hook for NN/RF inference integration
-    void update_vibration_window();
-    float compute_vibration_rms() const;
-    bool vibration_fault(float vib_total) const;
-    void reset_buffer();
+    // ArduPilot built-in vibration monitor (AP_InertialSensor) is the data
+    // source for the detector; samples are pushed into a 50-deep ring
+    // buffer of (total, rms_x, rms_y, rms_z), the 73-D feature vector is
+    // extracted on every push and fed to the exported RandomForest model.
+    void push_vibration_sample(const Vector3f &v);
+    bool run_inference(float &out_p_deformed);
+    bool vibration_fault(float p_deformed_ema, uint32_t new_clips) const;
+    void reset_detection();
     bool is_hover_stable(float &out_vxy, float &out_vz) const;
+
+    // SITL-only: replay vibration samples from a CSV (env NN_DETECT_CSV).
+    // Format: time_seconds,total_vibration,rms_x,rms_y,rms_z (with header).
+    // total_vibration is ignored — recomputed from rms_x/y/z for consistency
+    // with the rest of the pipeline.
+    void  csv_replay_open();
+    void  csv_replay_close();
+    void  csv_replay_rewind();
+    bool  csv_replay_next(Vector3f &out_vibe);
 
     enum class DetectState : uint8_t {
         WaitingForHover = 0,
         Detecting       = 1,
     };
 
-    static const uint16_t NN_WINDOW = 50;
+    static const uint16_t NN_RING = 50;  // matches WINDOW_SIZE in the model
 
-    float _acc_x[NN_WINDOW];
-    float _acc_y[NN_WINDOW];
-    float _acc_z[NN_WINDOW];
-    uint16_t _window_index;
-    uint16_t _samples_filled;
+    float _ring_total[NN_RING];
+    float _ring_x[NN_RING];
+    float _ring_y[NN_RING];
+    float _ring_z[NN_RING];
+    uint16_t _ring_index;
+    uint16_t _ring_filled;
+
+    Vector3f _vibe_ema;
+    bool _vibe_ema_initialised;
+    uint32_t _vibe_sample_period_ms;
+    uint32_t _last_sample_ms;
+
+    float _p_deformed_ema;
+    bool _p_ema_initialised;
+
+    uint32_t _clip_count_baseline;
     bool _fault_detected;
     uint32_t _last_report_ms;
     uint32_t _hover_stable_since_ms;  // 0 if hover criteria not currently met
     DetectState _state;
+
+    // CSV replay (SITL only). _csv_fp is void* to avoid pulling <cstdio>
+    // into the header — cast to FILE* in the cpp.
+    void *_csv_fp{nullptr};
+    bool  _csv_replay_active{false};
+    bool  _csv_replay_loop{false};
+    bool  _csv_exhausted_reported{false};
 };
 #endif
