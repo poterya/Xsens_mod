@@ -1,7 +1,7 @@
 From 20518f2bf30e366ad3de576b5b7ce4105db83c48 Mon Sep 17 00:00:00 2001
 From: poterya <skvorec.9142@gmail.com>
 Date: Fri, 15 May 2026 20:31:03 +0300
-Subject: [PATCH 1/2] ArduCopter: add NN_DETECT (mode 29) flight mode
+Subject: [PATCH 1/3] ArduCopter: add NN_DETECT (mode 29) flight mode
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -445,7 +445,7 @@ index 0000000000..6f6ab49c2d
 From 539f89f093cca40ffae55e6dade3ecc5450cd8a0 Mon Sep 17 00:00:00 2001
 From: poterya <skvorec.9142@gmail.com>
 Date: Fri, 15 May 2026 23:11:32 +0300
-Subject: [PATCH 2/2] ArduCopter: NN_DETECT integrate RF inference + SITL CSV
+Subject: [PATCH 2/3] ArduCopter: NN_DETECT integrate RF inference + SITL CSV
  replay
 
 Wires the exported RandomForest (200 trees, 73 features) into the
@@ -81021,6 +81021,155 @@ index 0000000000..15918de8a4
 +float predict_proba(const float features[FEATURE_COUNT]);
 +
 +}  // namespace NNDetectModel
+-- 
+2.34.1
+
+
+From 2a21ec5f6f6a23ccc80295168c06a0edeac4779a Mon Sep 17 00:00:00 2001
+From: poterya <skvorec.9142@gmail.com>
+Date: Fri, 15 May 2026 23:37:48 +0300
+Subject: [PATCH 3/3] ArduCopter: NN_DETECT add hover-gated CSV replay flag
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Optional env knob NN_DETECT_CSV_HOVER=1 makes the SITL CSV replay obey
+the hover-stability state machine instead of bypassing it. Use case:
+end-to-end validation of the full flight stack (arm → takeoff → hover
+→ NNDT) with realistic vibration data on top.
+
+Default (no NN_DETECT_CSV_HOVER) keeps the bench-replay behaviour
+introduced in the previous commit — CSV is consumed immediately after
+init().
+
+End-to-end SITL test (NN_DETECT_CSV=deformed.csv NN_DETECT_CSV_HOVER=1
+NN_DETECT_CSV_LOOP=1, arm → takeoff 5 m → mode NNDT): 157 consecutive
+BROKEN p=1.00 reports after the 3 s hover gate.
+---
+ ArduCopter/mode.h             |  1 +
+ ArduCopter/mode_nn_detect.cpp | 48 ++++++++++++++++++++++++++---------
+ 2 files changed, 37 insertions(+), 12 deletions(-)
+
+diff --git a/ArduCopter/mode.h b/ArduCopter/mode.h
+index 3b9b351fbe..4fc90df11d 100644
+--- a/ArduCopter/mode.h
++++ b/ArduCopter/mode.h
+@@ -2231,6 +2231,7 @@ private:
+     void *_csv_fp{nullptr};
+     bool  _csv_replay_active{false};
+     bool  _csv_replay_loop{false};
++    bool  _csv_require_hover{false};   // wait for stable hover before consuming CSV
+     bool  _csv_exhausted_reported{false};
+ };
+ #endif
+diff --git a/ArduCopter/mode_nn_detect.cpp b/ArduCopter/mode_nn_detect.cpp
+index b165399bca..8087c1ec52 100644
+--- a/ArduCopter/mode_nn_detect.cpp
++++ b/ArduCopter/mode_nn_detect.cpp
+@@ -52,9 +52,18 @@
+  * If it points to a CSV with the header
+  *   time_seconds,total_vibration,rms_x,rms_y,rms_z
+  * (the exact format written by methods/main.py VibrationAnalyzer.save_log)
+- * the detector pulls samples from the file instead of the IMU, skips the
+- * hover-stability gate and starts inferring immediately after init(). Set
+- * NN_DETECT_CSV_LOOP=1 to loop the file (useful for long-haul checks); by
++ * the detector pulls samples from the file instead of the IMU. Two replay
++ * styles are supported:
++ *
++ *   - Bench replay (default):   the airframe state is ignored, the
++ *     hover-stability gate is skipped and inference starts immediately
++ *     after init().
++ *   - Hover-gated replay:       set NN_DETECT_CSV_HOVER=1 — the detector
++ *     behaves like the live-IMU path (arm + takeoff + stable hover for 3 s)
++ *     and only then starts consuming the CSV. Used to validate the entire
++ *     flight stack with realistic vibration data on top.
++ *
++ * NN_DETECT_CSV_LOOP=1 loops the file (useful for long-haul checks); by
+  * default the detector holds the last sample once the file is exhausted.
+  *
+  * Inference
+@@ -121,16 +130,21 @@ bool ModeNNDetect::init(bool ignore_checks)
+     _fault_detected = false;
+     _last_report_ms = 0;
+ 
+-    if (_csv_replay_active) {
+-        // CSV replay: data is fed from disk, the airframe state is irrelevant.
++    if (_csv_replay_active && !_csv_require_hover) {
++        // Bench replay: data is fed from disk, airframe state is ignored.
+         _state = DetectState::Detecting;
+         gcs().send_text(MAV_SEVERITY_INFO,
+                         "NN_DETECT: engaged, replaying vibration CSV%s",
+                         _csv_replay_loop ? " (loop)" : "");
+     } else {
+         _state = DetectState::WaitingForHover;
+-        gcs().send_text(MAV_SEVERITY_INFO,
+-                        "NN_DETECT: engaged, take off and hover to start detection");
++        if (_csv_replay_active) {
++            gcs().send_text(MAV_SEVERITY_INFO,
++                            "NN_DETECT: engaged, CSV replay armed — take off and hover");
++        } else {
++            gcs().send_text(MAV_SEVERITY_INFO,
++                            "NN_DETECT: engaged, take off and hover to start detection");
++        }
+     }
+     return true;
+ }
+@@ -198,9 +212,11 @@ void ModeNNDetect::run()
+     const uint32_t now_ms = AP_HAL::millis();
+ 
+     // Disarm or landing always drops us back to waiting and flushes state —
+-    // except when we are replaying a CSV: there the data source has nothing
+-    // to do with the airframe state, so the detector runs unconditionally.
+-    if (!_csv_replay_active && (!motors->armed() || copter.ap.land_complete)) {
++    // except when we are bench-replaying a CSV (no hover requirement), where
++    // the data source is independent of the airframe state.
++    const bool gated_replay = _csv_replay_active && _csv_require_hover;
++    const bool bench_replay = _csv_replay_active && !_csv_require_hover;
++    if (!bench_replay && (!motors->armed() || copter.ap.land_complete)) {
+         if (_state == DetectState::Detecting) {
+             gcs().send_text(MAV_SEVERITY_INFO,
+                             "NN_DETECT: landed/disarmed, detector paused");
+@@ -211,7 +227,7 @@ void ModeNNDetect::run()
+         return;
+     }
+ 
+-    if (!_csv_replay_active) {
++    if (!bench_replay) {
+         float vxy = 0.0f, vz = 0.0f;
+         const bool hover_now = is_hover_stable(vxy, vz);
+ 
+@@ -282,6 +298,7 @@ void ModeNNDetect::run()
+                         ? (current_clips - _clip_count_baseline)
+                         : 0;
+     }
++    (void)gated_replay;
+ 
+     const bool current_fault =
+         inference_ready ? vibration_fault(_p_deformed_ema, new_clips) : false;
+@@ -440,8 +457,14 @@ void ModeNNDetect::csv_replay_open()
+     const char *loop_env = getenv("NN_DETECT_CSV_LOOP");
+     _csv_replay_loop = (loop_env != nullptr && loop_env[0] != '\0' &&
+                        loop_env[0] != '0');
++    const char *hover_env = getenv("NN_DETECT_CSV_HOVER");
++    _csv_require_hover = (hover_env != nullptr && hover_env[0] != '\0' &&
++                         hover_env[0] != '0');
+     gcs().send_text(MAV_SEVERITY_INFO,
+-                    "NN_DETECT: CSV replay %s", path);
++                    "NN_DETECT: CSV replay %s%s%s",
++                    path,
++                    _csv_replay_loop ? " loop" : "",
++                    _csv_require_hover ? " hover-gated" : "");
+ #endif
+ }
+ 
+@@ -455,6 +478,7 @@ void ModeNNDetect::csv_replay_close()
+     _csv_fp = nullptr;
+     _csv_replay_active = false;
+     _csv_replay_loop = false;
++    _csv_require_hover = false;
+     _csv_exhausted_reported = false;
+ }
+ 
 -- 
 2.34.1
 

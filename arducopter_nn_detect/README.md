@@ -49,10 +49,19 @@ time_seconds,total_vibration,rms_x,rms_y,rms_z
 ...
 ```
 
-When CSV replay is active the detector skips the hover-stability gate
-and starts inferring immediately after `mode NNDT`. Use
-`NN_DETECT_CSV_LOOP=1` to loop the file. The IMU branch is unchanged;
-on real flight controllers the file is never opened.
+Two replay styles are supported:
+
+| Env var | Behaviour |
+|---|---|
+| `NN_DETECT_CSV=<path>` | **Bench replay.** Hover-stability gate is skipped, detector starts inferring immediately after `mode NNDT`. No arm/takeoff required. |
+| `NN_DETECT_CSV=<path> NN_DETECT_CSV_HOVER=1` | **In-flight replay.** Full flight stack runs as on a real board: arm → takeoff → 3 s stable hover → CSV starts feeding the detector. |
+| `+ NN_DETECT_CSV_LOOP=1` | Loop the file. |
+
+The IMU branch is unchanged; on real flight controllers the file is
+never opened.
+
+See [`RUN_CSV.md`](RUN_CSV.md) for ready-to-run launch and
+`pymavlink`-based test scripts for both styles.
 
 Verified end-to-end with samples from the `methods` branch:
 
@@ -80,8 +89,15 @@ Verified end-to-end with samples from the `methods` branch:
 arducopter_nn_detect/
 ├── README.md                          this file
 ├── INSTALL.md                         step-by-step build & SITL test
+├── RUN_CSV.md                         CSV-replay launch recipes (RU)
+├── CSV_for_tests/                     short sample vibration_log.csv copies
+├── scripts/
+│   ├── start_sitl_csv_hover.sh        SITL + hover-gated CSV (arg: filename)
+│   ├── launch_1_sitl_csv_hover.sh     обёртка: шаг 1 (по умолчанию normal_1.csv)
+│   ├── launch_2_auto_flight.sh       обёртка: шаг 2 → auto_flight_nndt.py
+│   └── auto_flight_nndt.py            arm / takeoff / mode NNDT + print status
 ├── patches/
-│   └── nn_detect.patch                unified patch (two commits, apply with `git am`)
+│   └── nn_detect.patch                unified patch (three commits, apply with `git am`)
 └── files/
     └── ArduCopter/
         ├── Copter.h                   reference copy of modified files
@@ -103,8 +119,8 @@ provided so that the changes can be inspected without applying anything.
 Generated from the local ArduPilot tree at:
 
 * upstream base `ArduCopter V4.8.0-dev` (`1b34668cc0`)
-* feature branch `nn_detect` (two commits — the mode skeleton + the RF
-  inference / CSV replay integration)
+* feature branch `nn_detect` (three commits — skeleton, RF inference /
+  CSV replay, hover-gated CSV flag)
 
 The patch applies cleanly on any recent ArduPilot master that still has:
 

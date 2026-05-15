@@ -2231,6 +2231,7 @@ private:
     void *_csv_fp{nullptr};
     bool  _csv_replay_active{false};
     bool  _csv_replay_loop{false};
+    bool  _csv_require_hover{false};   // wait for stable hover before consuming CSV
     bool  _csv_exhausted_reported{false};
 };
 #endif

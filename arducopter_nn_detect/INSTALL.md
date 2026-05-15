@@ -172,6 +172,9 @@ Exit the mode with `mode LAND` or `mode RTL`.
 
 ## Smoke test 2 — CSV replay (SITL only)
 
+> A more detailed cookbook in Russian, with two ready-to-run recipes
+> (bench / in-flight), lives in [`RUN_CSV.md`](RUN_CSV.md).
+
 Set `NN_DETECT_CSV` to any CSV in the format produced by
 `methods/main.py VibrationAnalyzer.save_log`:
 
@@ -192,7 +195,12 @@ NN_DETECT_CSV=/path/to/vibration_log.csv \
     -I0
 ```
 
-Optional: `NN_DETECT_CSV_LOOP=1` to loop the file.
+Optional flags:
+
+| Env var | Effect |
+|---|---|
+| `NN_DETECT_CSV_LOOP=1` | Loop the file on EOF. |
+| `NN_DETECT_CSV_HOVER=1` | Require the normal hover-stability gate (arm + takeoff + stable hover for 3 s) before consuming the CSV. Default is to skip the gate. |
 
 Drive the simulator with a tiny pymavlink helper — no arming, no
 takeoff is required, the detector engages straight after `mode NNDT`:
