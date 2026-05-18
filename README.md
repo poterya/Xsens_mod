@@ -1,55 +1,55 @@
-# Xsens_MTi_Serial_Reader
-Use Python Serial library to config/read data from Xsens MTi
-
-Install the dependency libary
-Windows:
-```
-pip install pyserial
-```
-
-ubuntu
-```
-sudo pip3 install pyserial
-```
-or
-```
-sudo apt-get update
-sudo apt-get -y install python3-serial
-```
-
-You need to change the COM and baudrate to your own sensor's COM name and baudrate(default is 115200, but could be configured in MT Manager - Device Settings) in raw_xsens_comms.py:
-```
-serial = SerialHandler("COM12", 921600) #for ubuntu, change to '/dev/ttyUSB0' #baudrate default is 115200, unless changed in MT Manager
-```
-
-#### if you want to configure the sensor, un-comment this line below:
-```
-serial.send_with_checksum(go_to_config)
-set_output_conf(serial)
-```
-
-check the set_output_conf() function to send the hex command for setting up to output configuration, you could compose this message at:
-MT Manager - Device Data View - GoToConfig - SetOuputConfiguration, and click edit, to add the messages needed.
 
 
-run the code in the CMD in Windows like this:
-```
-python main.py
-```
-for ubuntu:
-```
-python3 main.py
-```
+- **`src/apps/all_detectors.py`** — главный скрипт «всё вместе»: Калман, дерево, случайный лес. Есть запуск по файлу **`--offline`** и режим **`--compare-set03`** (сравнить ещё и нейросеть MLP по логам из `set_03`, результат в txt).
+- **`src/apps/start_detection.py`** — вариант под полёт/тест, там в основном MLP, результаты складываются в `runs/flight_test/`.
+- **`src/apps/main.py`** — старт работы с портом (смотри комментарии внутри файла).
+- **`src/apps/csv_plot_browser.py`** — открыть CSV и посмотреть графики.
+- **`src/common/`** — математика Калмана, вытаскивание признаков из окна, загрузка моделей.
+- **`src/xsens/`** — разбор пакетов с датчика и чтение COM-порта.
+- **`src/training/`** — скрипты, которые готовят `set_05` и обучают модели.
+- **`datasets/set_03`** — «сырые» логи с полётов.
+- **`datasets/set_05`** — то же самое, но уже разложено на train/val/test скриптом `prepare_set05.py`.
+- **`models/`** — обученные файлы (`.pkl` для sklearn, `.pt` для PyTorch и т.д.).
+
+---
+
+## Установка
 
 
 
-This code has been checked with MTi-680 in Windows 11, and MTi-300 in ubuntu 18.04LTS(nVidia Jetson Nano),  not all other MTi models were tested, by they share the same Xbus communication protocol.
+```bash
+pip install numpy pandas scikit-learn matplotlib pyserial torch
+```
 
-For MTi-300 with cable model CA-USB-MTi, if you don't have 'dev/ttyUSB0', 
+Для **`--compare-set03`** без **torch** нейросеть не посчитается.
+
+---
+
+## Запуск (из папки `Xsens_mod`)
+
+Один лог из файла, без датчика:
+
+```bash
+python3 src/apps/all_detectors.py --offline путь/к/vibration_log.csv
 ```
-git clone https://github.com/xsens/xsens_mt.git
-cd ~/xsens_mt
-make HAVE_LIBUSB=1
-sudo modprobe usbserial
-sudo insmod ./xsens_mt.ko
+
+Таблица "кто из четырёх методов на скольких процентах угадал" по случайным 10 логам из `datasets/set_03`:
+
+```bash
+python3 src/apps/all_detectors.py --compare-set03 --compare-n 10 --compare-seed 42
 ```
+
+У меня в коде порт обычно **`/dev/ttyUSB0`**, скорость **115200**. Если у тебя другой порт или baud — это правится в том скрипте, которым пользуешься.
+
+---
+
+## Куда смотреть для НИР
+
+- Коротко про файлы в `nir_section4` и про команду с таблицей — **`nir_section4/README.md`**
+- Большой текст с формулами — **`nir_section4/section4.md`**
+
+---
+
+## Про железо
+
+Проверяли на MTi с протоколом Xbus (типа 300 / 680). На другой модели может завестись сразу, а может нет — без проверки не обещаю. Если датчика нет — не страшно, тестиовать можно на **`--offline`** или через браузер CSV.
