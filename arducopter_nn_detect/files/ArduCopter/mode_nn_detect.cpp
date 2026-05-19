@@ -32,9 +32,10 @@
  *     NN_HOVER_STABLE_MS. Progress STATUSTEXT once a second.
  *   - Detecting: every NN_VIBE_SAMPLE_PERIOD_MS the current per-axis
  *     vibration levels are pushed into a 50-deep ring; once the ring is
- *     full the 73-D feature vector is extracted and fed to the exported
- *     RandomForest model (NNDetectModel::predict_proba). The probability
- *     of class "DEFORMED" is EMA-smoothed and thresholded.
+ *     full the 80-D feature vector is extracted and fed to the exported
+ *     MLP model (NNDetectModel::predict_proba). The probability of
+ *     class "DEFORMED" (sigmoid of the network logit) is EMA-smoothed
+ *     and thresholded.
  * Disarm / landing returns to WaitingForHover and clears all state.
  *
  * Data source
@@ -68,19 +69,24 @@
  *
  * Inference
  * ---------
- * RandomForest with 200 trees, max_depth=12, trained by
- * methods/train_rf_detector.py on Normal_mod / Deformed_mod sessions. The
- * model is exported to a flat C++ table by methods/export_rf_to_cpp.py
+ * MLP binary classifier from branch `nir`
+ * (models/mlp/propeller_fault_mlp_keras_set05.pt): BatchNorm1d(80) ->
+ * Linear(80,128)+ReLU -> Linear(128,64)+ReLU -> Linear(64,32)+ReLU ->
+ * Linear(32,1) -> sigmoid. Weights are exported into a flat C++ table by
+ * arducopter_nn_detect/model_export/export_mlp_to_cpp.py
  * (see nn_detect_model.{h,cpp}). The feature extractor in
- * nn_detect_features.cpp mirrors numpy / pandas exactly so the C++ and
- * Python inferences agree on identical input windows.
+ * nn_detect_features.cpp mirrors src/common/feature_extraction.py exactly,
+ * verified end-to-end against PyTorch (model_export/verify_against_cpp.py
+ * reports per-window |P_py - P_cpp| < 1e-6 across all CSV_for_tests files).
  */
 
 // ----- Detector parameters -----
 
 // Detection trips when EMA-smoothed P(DEFORMED) crosses this threshold.
-// Same default as methods/realtime_rf_detector.py DEFAULT_DEFORMED_THRESHOLD.
-static constexpr float NN_DEFORMED_THRESHOLD = 0.35f;
+// The MLP outputs a calibrated sigmoid, with ~0 on Normal_mod and ~1 on
+// Deformed_mod across the validation set (test ROC AUC 0.9999), so we use
+// the natural decision boundary.
+static constexpr float NN_DEFORMED_THRESHOLD = 0.5f;
 
 // EMA smoothing factor for the probability stream.
 static constexpr float NN_PROBA_EMA_ALPHA = 0.25f;
