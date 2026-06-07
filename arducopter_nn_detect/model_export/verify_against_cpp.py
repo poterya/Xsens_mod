@@ -35,7 +35,8 @@ CPP_FILES = [
     THIS_DIR / "cpp_test_harness.cpp",
 ]
 BIN = THIS_DIR / "cpp_test_harness.bin"
-WINDOW_SIZE = 50
+WINDOW_SIZE = 10
+FEATURE_COUNT = 46
 
 
 def compile_cpp() -> Path:
@@ -76,13 +77,13 @@ def run_cpp(total, x, y, z) -> tuple[np.ndarray, float]:
             feats = [float(v) for v in line.split()[1:]]
         elif line.startswith("PROBA"):
             proba = float(line.split()[1])
-    assert len(feats) == 80, len(feats)
+    assert len(feats) == FEATURE_COUNT, len(feats)
     assert 0.0 <= proba <= 1.0, proba
     return np.array(feats, dtype=np.float64), proba
 
 
 def load_pytorch_model() -> MLPDetector:
-    model = MLPDetector(in_features=80)
+    model = MLPDetector(in_features=FEATURE_COUNT, hidden=16)
     state = torch.load(THIS_DIR / "propeller_fault_mlp_keras_set05.pt",
                        map_location="cpu", weights_only=True)
     model.load_state_dict(state)
@@ -103,10 +104,17 @@ def synthetic_windows(seed: int = 0) -> list[tuple[np.ndarray, ...]]:
         rms = rng.uniform(0.0, 1.5, size=(WINDOW_SIZE, 3))
         total = np.sqrt((rms ** 2).sum(axis=1))
         out.append((total, rms[:, 0], rms[:, 1], rms[:, 2]))
-    # Add one near-constant window to exercise the spectral-zero guard.
-    const = np.full((WINDOW_SIZE,), 0.42, dtype=np.float64)
-    out.append((const.copy(), const.copy(), const.copy(), const.copy()))
     return out
+
+
+def default_csv_windows() -> list[tuple[np.ndarray, ...]]:
+    csv_dir = THIS_DIR.parent / "CSV_for_tests"
+    out: list[tuple[np.ndarray, ...]] = []
+    for csv_path in sorted(csv_dir.glob("*.csv")):
+        out.extend(csv_windows(csv_path))
+        if len(out) >= 10:
+            break
+    return out[:10]
 
 
 def csv_windows(path: Path) -> list[tuple[np.ndarray, ...]]:
@@ -138,7 +146,7 @@ def main() -> None:
     model = load_pytorch_model()
     feature_names = feature_name_order()
 
-    windows = csv_windows(args.csv) if args.csv else synthetic_windows()
+    windows = csv_windows(args.csv) if args.csv else default_csv_windows()
     max_feat_diff = 0.0
     max_proba_diff = 0.0
 

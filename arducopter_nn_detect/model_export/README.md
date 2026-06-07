@@ -1,21 +1,22 @@
 # Model export pipeline
 
-This directory contains the tooling that turns the trained PyTorch MLP
+This directory contains the tooling that turns the trained MLP detector
 into C source code suitable for compilation inside ArduCopter.
 
-The high-level design and the rationale for tool choice are in
-[`../MODEL_INTEGRATION.md`](../MODEL_INTEGRATION.md). This file is the
-operational recipe.
+The current model is `method_mlp.pkl` from branch `tests`: an
+`sklearn.Pipeline` of `StandardScaler` + `MLPClassifier`
+(46 inputs → 16 ReLU → 1 sigmoid), trained on 10-sample (0.1 s) windows.
 
 ## Contents
 
 | File | Purpose |
 |---|---|
-| `propeller_fault_mlp_keras_set05.pt` | Trained PyTorch weights (state_dict). |
-| `feature_extraction.py` | Python reference for the 80-D feature vector (vendored from branch `nir`). |
-| `export_via_onnx2c.py` | **Canonical exporter**: PyTorch → ONNX → onnx2c → `nn_detect_model_onnx2c.c`. |
-| `export_mlp_to_cpp.py` | Legacy hand-written exporter; now used only as an independent reference for verifying the C++ feature extractor against the Python source of truth. |
-| `cpp_test_harness.cpp` | Standalone driver: reads a 50-sample window from stdin, prints 80 features + `P(fault)`. |
+| `method_mlp.pkl` | Trained sklearn Pipeline (StandardScaler + MLPClassifier), source of truth. |
+| `propeller_fault_mlp_keras_set05.pt` | PyTorch mirror of the sklearn model, produced by `export_mlp_to_cpp.py`. Filename kept for pipeline compatibility. |
+| `feature_extraction.py` | Python reference for the 46-D feature vector (copy of `features.py` from branch `tests`). |
+| `export_mlp_to_cpp.py` | **Converter**: `method_mlp.pkl` → `.pt`. Mirrors the sklearn weights into a PyTorch `MLPDetector` (StandardScaler baked as `BatchNorm1d(46, affine=false)`). Verifies against sklearn on real CSV windows. |
+| `export_via_onnx2c.py` | **Canonical exporter**: `.pt` → ONNX → onnx2c → `nn_detect_model_onnx2c.c`. |
+| `cpp_test_harness.cpp` | Standalone driver: reads a 10-sample window from stdin, prints 46 features + `P(fault)`. |
 | `verify_against_cpp.py` | Compiles the C/C++ files that ArduPilot will compile and checks bit-equivalence with PyTorch on real CSV windows. |
 
 ## Prerequisites
@@ -84,23 +85,38 @@ elsewhere.
 
 ## Regenerating the model
 
+Two steps, run from `model_export/`:
+
 ```bash
-cd model_export
+# 1) sklearn .pkl -> PyTorch .pt
+python3 export_mlp_to_cpp.py
+# Writes: propeller_fault_mlp_keras_set05.pt
+#         (verifies PyTorch vs sklearn on real CSV windows)
+
+# 2) .pt -> ONNX -> onnx2c -> C
 python3 export_via_onnx2c.py
-# Writes:
-#   model_export/mlp.onnx                          (intermediate, gitignored)
-#   files/ArduCopter/nn_detect_model_onnx2c.c      (~530 KB, committed)
+# Writes: model_export/mlp.onnx                       (intermediate, gitignored)
+#         files/ArduCopter/nn_detect_model_onnx2c.c   (~29 KB, committed)
 ```
 
 The C file plus the thin C++ wrapper in
 `files/ArduCopter/nn_detect_model.cpp` together implement the
-`NNDetectModel::predict_proba(float[80]) → float` API consumed by the
-flight mode. Nothing else needs to change.
+`NNDetectModel::predict_proba(float[46]) → float` API consumed by the
+flight mode.
+
+> **Degenerate features.** Four spectral features `spec_*_band_0_10`
+> are the 0–10 Hz band on a demeaned 10-sample window — i.e. the DC bin,
+> which is ~0 by construction (only float roundoff ~1e-32 remains). Their
+> `StandardScaler` scale is ~1e-30, so naive normalisation overflows in
+> float32. `export_mlp_to_cpp.py` therefore replaces those scales with
+> 1.0 (so the features contribute ~0). This is the reason the PyTorch/C
+> path differs from raw sklearn by ~4e-4 in probability — sklearn is
+> overfitting amplified roundoff noise; the C path is the correct one.
 
 ## Verifying
 
 ```bash
-python3 verify_against_cpp.py                              # synthetic
+python3 verify_against_cpp.py                              # real CSV windows
 python3 verify_against_cpp.py --csv ../CSV_for_tests/deformed_1.csv
 python3 verify_against_cpp.py --csv ../CSV_for_tests/normal1.csv
 ```
@@ -111,31 +127,8 @@ Each invocation:
    `nn_detect_model_onnx2c.c` (C, by `gcc`), and `cpp_test_harness.cpp`
    (C++) into a single binary - the same files that ArduCopter's `waf`
    build picks up, with the same per-extension language rules.
-2. Generates a few 50-sample windows (from CSV or synthetic).
+2. Generates a few 10-sample windows (from CSV or synthetic).
 3. Pushes each window through PyTorch and through the compiled binary,
    reporting `|P_py − P_cpp|` per window.
 
-Tolerance: `|ΔP| ≤ 1e-4`. Typical: `~1e-7`.
-
-## Updating the hand-written feature extractor
-
-If `src/common/feature_extraction.py` on branch `nir` changes, the C++
-mirror in `nn_detect_features.cpp` has to be re-synchronised. Run
-
-```bash
-python3 export_mlp_to_cpp.py
-```
-
-which prints the max diff between the Python source-of-truth and a
-pure-Python re-implementation of the C++ extractor. If this diff goes
-above `~1e-14` the extractor needs hand-editing in
-`files/ArduCopter/nn_detect_features.cpp` to track the Python changes.
-
-To regenerate the *reference* hand-written model + extractor (as a diff
-target against the onnx2c output, never used by ArduCopter):
-
-```bash
-python3 export_mlp_to_cpp.py --write-legacy
-# -> writes model_export/legacy_handwritten/{nn_detect_model.{h,cpp},
-#                                            nn_detect_features.{h,cpp}}
-```
+Tolerance: `|ΔP| ≤ 1e-4`. Typical: `~1e-10` (C ↔ PyTorch match exactly).

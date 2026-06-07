@@ -1,8 +1,8 @@
 // Standalone harness: read a window of (total, rms_x, rms_y, rms_z) samples
-// from stdin (50 rows, space-separated), then print the resulting features
-// and the MLP probability so the Python verification script can compare
-// against the PyTorch reference. Linked against the same nn_detect_*.cpp
-// files that ArduCopter compiles.
+// from stdin (WINDOW_SIZE rows, space-separated), then print the resulting
+// features and the MLP probability so the Python verification script can
+// compare against the PyTorch reference. Linked against the same
+// nn_detect_*.cpp files that ArduCopter compiles.
 
 #include <cstdio>
 

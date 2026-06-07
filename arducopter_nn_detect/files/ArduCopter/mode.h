@@ -2180,9 +2180,9 @@ protected:
 private:
 
     // ArduPilot built-in vibration monitor (AP_InertialSensor) is the data
-    // source for the detector; samples are pushed into a 50-deep ring
-    // buffer of (total, rms_x, rms_y, rms_z), the 73-D feature vector is
-    // extracted on every push and fed to the exported RandomForest model.
+    // source for the detector; samples are pushed into a 10-deep ring
+    // buffer of (total, rms_x, rms_y, rms_z), the 46-D feature vector is
+    // extracted on every push and fed to the exported MLP model.
     void push_vibration_sample(const Vector3f &v);
     bool run_inference(float &out_p_deformed);
     bool vibration_fault(float p_deformed_ema, uint32_t new_clips) const;
@@ -2203,7 +2203,7 @@ private:
         Detecting       = 1,
     };
 
-    static const uint16_t NN_RING = 50;  // matches WINDOW_SIZE in the model
+    static const uint16_t NN_RING = 10;  // matches WINDOW_SIZE in the model
 
     float _ring_total[NN_RING];
     float _ring_x[NN_RING];

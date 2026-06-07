@@ -31,8 +31,8 @@
  *     and |vz| <= NN_HOVER_VZ_THRESHOLD held continuously for
  *     NN_HOVER_STABLE_MS. Progress STATUSTEXT once a second.
  *   - Detecting: every NN_VIBE_SAMPLE_PERIOD_MS the current per-axis
- *     vibration levels are pushed into a 50-deep ring; once the ring is
- *     full the 80-D feature vector is extracted and fed to the exported
+ *     vibration levels are pushed into a 10-deep ring; once the ring is
+ *     full the 46-D feature vector is extracted and fed to the exported
  *     MLP model (NNDetectModel::predict_proba). The probability of
  *     class "DEFORMED" (sigmoid of the network logit) is EMA-smoothed
  *     and thresholded.
@@ -69,23 +69,25 @@
  *
  * Inference
  * ---------
- * MLP binary classifier from branch `nir`
- * (models/mlp/propeller_fault_mlp_keras_set05.pt): BatchNorm1d(80) ->
- * Linear(80,128)+ReLU -> Linear(128,64)+ReLU -> Linear(64,32)+ReLU ->
- * Linear(32,1) -> sigmoid. Weights are exported into a flat C++ table by
- * arducopter_nn_detect/model_export/export_mlp_to_cpp.py
- * (see nn_detect_model.{h,cpp}). The feature extractor in
- * nn_detect_features.cpp mirrors src/common/feature_extraction.py exactly,
- * verified end-to-end against PyTorch (model_export/verify_against_cpp.py
- * reports per-window |P_py - P_cpp| < 1e-6 across all CSV_for_tests files).
+ * MLP binary classifier из ветки `tests`
+ * (method_mlp.pkl = sklearn.Pipeline[StandardScaler + MLPClassifier]):
+ *   BatchNorm1d(46, affine=false)   // запекает scaler
+ *     -> Linear(46, 16) + ReLU
+ *     -> Linear(16, 1)              // logit
+ *     -> sigmoid                    // P(class==1=DEFORMED)
+ * Веса конвертируются .pkl -> .pt (export_mlp_to_cpp.py) и далее
+ * .pt -> ONNX -> C (export_via_onnx2c.py + onnx2c). Финальный код модели
+ * лежит в nn_detect_model_onnx2c.c, обёртка — в nn_detect_model.{h,cpp}.
+ * Экстрактор признаков в nn_detect_features.cpp повторяет
+ * features.extract_features из ветки `tests` (46 фич, окно 10 отсчётов).
  */
 
 // ----- Detector parameters -----
 
 // Detection trips when EMA-smoothed P(DEFORMED) crosses this threshold.
-// The MLP outputs a calibrated sigmoid, with ~0 on Normal_mod and ~1 on
-// Deformed_mod across the validation set (test ROC AUC 0.9999), so we use
-// the natural decision boundary.
+// На «честном» test-сплите ветки `tests` модель даёт ROC AUC ~0.99,
+// а её выход — калиброванный sigmoid близкий к 0 на Normal и к 1
+// на Deformed, поэтому используем естественную границу 0.5.
 static constexpr float NN_DEFORMED_THRESHOLD = 0.5f;
 
 // EMA smoothing factor for the probability stream.
@@ -105,9 +107,11 @@ static constexpr float    NN_HOVER_VXY_THRESHOLD = 0.30f;  // m/s
 static constexpr float    NN_HOVER_VZ_THRESHOLD  = 0.30f;  // m/s
 static constexpr uint32_t NN_HOVER_STABLE_MS     = 3000;   // continuous time required
 
-static_assert(NNDetectFeatures::WINDOW_SIZE == 50, "ring size assumed 50");
+static_assert(NNDetectFeatures::WINDOW_SIZE == 10, "ring size assumed 10");
 static_assert(NNDetectModel::FEATURE_COUNT  == NNDetectFeatures::FEATURE_COUNT,
               "model and extractor feature counts disagree");
+static_assert(NNDetectModel::WINDOW_SIZE    == NNDetectFeatures::WINDOW_SIZE,
+              "model and extractor window sizes disagree");
 
 
 bool ModeNNDetect::init(bool ignore_checks)
