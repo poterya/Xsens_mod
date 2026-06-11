@@ -45,10 +45,6 @@ HIDDEN = 16
 WINDOW_SIZE = 10
 SAMPLE_RATE_HZ = 100.0
 
-
-# Порог, ниже которого scale считается «вырожденным» (фича почти
-# константа в обучающей выборке) и заменяется на 1. Подробнее — в
-# _build_state_dict_from_pkl.
 DEGENERATE_SCALE = 1e-6
 
 
@@ -97,11 +93,7 @@ def _build_state_dict_from_pkl(pkl_path: Path, expected_names: list[str]) -> dic
     if mlp.out_activation_ != "logistic":
         raise SystemExit(f"Ожидался out_activation='logistic', получен {mlp.out_activation_}")
 
-    # Вырожденные scale (фича почти константа во всём train) дают
-    # деление на ~1e-30, что в float32 превращается в inf/nan. Реальные
-    # значения такой фичи на инференсе будут почти равны mean, поэтому
-    # подмена scale на 1.0 безопасна: (x - mean)/1 даст ~0, как и в
-    # обучении (где scaler возвращал 0 на ровном mean-значении).
+
     mean_np = np.asarray(scaler.mean_, dtype=np.float64)
     scale_np = np.asarray(scaler.scale_, dtype=np.float64)
     degenerate = scale_np < DEGENERATE_SCALE
@@ -131,13 +123,7 @@ def _build_state_dict_from_pkl(pkl_path: Path, expected_names: list[str]) -> dic
 
 
 def _verify(model: nn.Module, pkl_path: Path) -> float:
-    """Сравниваем PyTorch с sklearn на реальных вибрационных окнах.
-
-    Берём окна из ../CSV_for_tests (тех же файлов, по которым исходно
-    проверяли C-инференс на ветке `nir`). На реальных входах
-    вырожденные спектральные фичи всегда близки к mean, и модели
-    согласуются с машинной точностью.
-    """
+   
     bundle = pickle.load(pkl_path.open("rb"))
     pipe = bundle["model"]
     csv_dir = THIS_DIR.parent / "CSV_for_tests"
@@ -174,11 +160,7 @@ def convert(pkl_path: Path, out_pt: Path) -> None:
         raise SystemExit(f"Проблема при загрузке весов: missing={missing}, unexpected={unexpected}")
     diff = _verify(model, pkl_path)
     print(f"PyTorch vs sklearn max |P_diff| = {diff:.3e}")
-    # Допуск 5e-3: единственный источник расхождения — 4 вырожденные
-    # спектральные фичи band_0_10 (DC-бин после демина = численный шум
-    # ~1e-32, который StandardScaler усиливает до O(0.1)). Мы их зануляем,
-    # поэтому PyTorch/C дают ~0, а sklearn — переобученный на шуме O(0.1).
-    # При пороге 0.5 и EMA-сглаживании это не влияет на решение.
+   
     if diff > 5e-3:
         raise SystemExit("Расхождение слишком велико — конвертация неверна")
     torch.save(model.state_dict(), out_pt)

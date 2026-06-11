@@ -44,9 +44,7 @@ def compile_cpp() -> Path:
     cc = shutil.which("gcc") or shutil.which("clang")
     if cxx is None or cc is None:
         raise SystemExit("No C/C++ compiler found.")
-    # The onnx2c-generated file is C (with C linkage for `entry`), so we
-    # compile it separately with the C compiler before linking with g++.
-    # ArduPilot's waf build system makes the same per-extension distinction.
+
     c_files = [p for p in CPP_FILES if p.suffix == ".c"]
     cpp_files = [p for p in CPP_FILES if p.suffix != ".c"]
     objs: list[Path] = []

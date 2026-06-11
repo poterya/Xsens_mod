@@ -41,8 +41,7 @@ import numpy as np
 import torch
 from pymavlink import mavutil
 
-# Make model_export importable so we share the exact feature extractor
-# and the MLPDetector class with the C++/ONNX export verification path.
+
 HERE = Path(__file__).resolve().parent
 MODEL_EXPORT = HERE.parent / "model_export"
 sys.path.insert(0, str(MODEL_EXPORT))
